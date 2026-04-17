@@ -1,0 +1,34 @@
+{
+  "name": "opencode-kimi-for-coding",
+  "version": "0.1.0",
+  "description": "OpenCode plugin that adds first-class support for Kimi K2.6 (kimi-for-coding) via the official Kimi OAuth device flow, matching the upstream kimi-cli 1:1.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src",
+    "README.md",
+    "AGENTS.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "kimi",
+    "kimi-for-coding",
+    "kimi-k26",
+    "moonshot",
+    "oauth"
+  ],
+  "peerDependencies": {
+    "@opencode-ai/plugin": ">=1.4.6"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "^1.4.7",
+    "typescript": "^5.6.0",
+    "@types/node": "^22.0.0"
+  }
+}

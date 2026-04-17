@@ -1,0 +1,4 @@
+research/
+node_modules/
+dist/
+*.log
