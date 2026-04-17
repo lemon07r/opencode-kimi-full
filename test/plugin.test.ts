@@ -412,6 +412,6 @@ test("auth callback prints a config snippet with top-level model variants", asyn
   const model = parsed.provider[PROVIDER_ID]!.models[MODEL_ID]!
   expect(model.limit?.context).toBe(262144)
   expect(model.variants?.off).toEqual({ reasoning_effort: "off" })
-  expect(model.variants?.auto).toEqual({})
+  expect(model.variants?.auto).toEqual({ reasoning_effort: "auto" })
   expect(model.options?.variants).toBeUndefined()
 })

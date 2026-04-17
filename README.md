@@ -74,7 +74,7 @@ After the plugin is installed, add a provider entry in `~/.config/opencode/openc
           "options": {},
           "variants": {
             "off":    { "reasoning_effort": "off" },
-            "auto":   {},
+            "auto":   { "reasoning_effort": "auto" },
             "low":    { "reasoning_effort": "low" },
             "medium": { "reasoning_effort": "medium" },
             "high":   { "reasoning_effort": "high" }
