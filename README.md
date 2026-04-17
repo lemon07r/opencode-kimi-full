@@ -40,7 +40,7 @@ Add the plugin and a provider entry to `opencode.json` (or `~/.config/opencode/o
   "plugin": ["opencode-kimi-full"],
   "provider": {
     "kimi-for-coding-oauth": {
-      "name": "Kimi K2.6 (for coding)",
+      "name": "Kimi For Coding (OAuth)",
       "npm": "@ai-sdk/openai-compatible",
       "options": {
         "baseURL": "https://api.kimi.com/coding/v1"
