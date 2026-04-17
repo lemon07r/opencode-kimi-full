@@ -10,7 +10,10 @@ test("KIMI_CLI_VERSION is a non-empty semver", () => {
 })
 
 test("USER_AGENT embeds KIMI_CLI_VERSION", () => {
-  expect(C.USER_AGENT).toBe(`KimiCodeCLI/${C.KIMI_CLI_VERSION}`)
+  // Must be `KimiCLI/<version>` verbatim — Moonshot's backend 403s on any
+  // other UA prefix ("access_terminated_error"). See upstream
+  // research/kimi-cli/src/kimi_cli/constant.py → get_user_agent.
+  expect(C.USER_AGENT).toBe(`KimiCLI/${C.KIMI_CLI_VERSION}`)
 })
 
 test("OAuth constants match upstream kimi-cli exactly", () => {

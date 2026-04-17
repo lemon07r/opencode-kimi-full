@@ -33,15 +33,27 @@ function ascii(value: string): string {
   return value.replace(/[^\x20-\x7e]/g, "?")
 }
 
-/** Builds the 7 X-Msh-* / UA headers kimi-cli sends on every request. */
+/**
+ * Builds the 7 X-Msh-* / UA headers kimi-cli sends on every request.
+ *
+ * Values mirror research/kimi-cli/src/kimi_cli/auth/oauth.py → _common_headers
+ * and _device_model. Deviations cause Moonshot's backend to 403 with
+ * "access_terminated_error: Kimi For Coding is currently only available for
+ * Coding Agents". Node equivalents:
+ *   - platform.system()  → os.type()     ("Linux"/"Darwin"/"Windows_NT")
+ *   - platform.release() → os.release()
+ *   - platform.machine() → os.machine?.() (Node 20+ "x86_64"; NOT os.arch() which says "x64")
+ *   - platform.version() → os.version()  (kernel build string on Linux)
+ */
 export function kimiHeaders(): Record<string, string> {
+  const machine = os.machine?.() || os.arch()
   return {
     "User-Agent": USER_AGENT,
     "X-Msh-Platform": "kimi_cli",
     "X-Msh-Version": KIMI_CLI_VERSION,
     "X-Msh-Device-Name": ascii(os.hostname() || "unknown"),
-    "X-Msh-Device-Model": ascii(os.machine?.() || os.arch()),
+    "X-Msh-Device-Model": ascii(`${os.type()} ${os.release()} ${machine}`),
     "X-Msh-Device-Id": getDeviceId(),
-    "X-Msh-Os-Version": ascii(`${os.type()} ${os.release()}`),
+    "X-Msh-Os-Version": ascii(os.version?.() || `${os.type()} ${os.release()}`),
   }
 }

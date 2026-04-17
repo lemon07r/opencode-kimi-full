@@ -58,3 +58,29 @@ test("Device id is also present and matches in the headers map", () => {
   const h = kimiHeaders()
   expect(h["X-Msh-Device-Id"]).toBe(getDeviceId())
 })
+
+// Regression guard: prior to v1.0.3 we were sending `X-Msh-Device-Model =
+// <arch>` and `X-Msh-Os-Version = <type release>`. That didn't match kimi-cli
+// (which uses `platform.system() + release() + machine()` for the model and
+// `platform.version()` — the kernel build string — for the os version) and
+// caused Moonshot to 403 every request from this plugin with
+// "access_terminated_error". Keep these shape-asserts strict so a future
+// "cleanup" of headers.ts can't silently regress the fingerprint.
+test("X-Msh-Device-Model matches kimi-cli _device_model() shape (system release machine)", () => {
+  const h = kimiHeaders()
+  const sys = os.type()
+  const rel = os.release()
+  const mach = os.machine?.() || os.arch()
+  expect(h["X-Msh-Device-Model"]).toBe(`${sys} ${rel} ${mach}`)
+  // Must contain whitespace-separated release and machine — i.e. more than a
+  // bare arch string.
+  expect(h["X-Msh-Device-Model"]).toContain(" ")
+})
+
+test("X-Msh-Os-Version matches os.version() (kernel build string on Linux)", () => {
+  const h = kimiHeaders()
+  // `os.version()` exists in Node 13.13+ — be lenient if missing.
+  if (typeof os.version === "function") {
+    expect(h["X-Msh-Os-Version"]).toBe(os.version())
+  }
+})

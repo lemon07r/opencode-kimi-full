@@ -8,7 +8,11 @@
 // secret. scope `kimi-code` is what routes the issued JWT to K2.6.
 
 export const KIMI_CLI_VERSION = "1.35.0"
-export const USER_AGENT = `KimiCodeCLI/${KIMI_CLI_VERSION}`
+// Upstream: research/kimi-cli/src/kimi_cli/constant.py get_user_agent() →
+// f"KimiCLI/{get_version()}". This must match verbatim — Moonshot's
+// `kimi-for-coding` backend 403s on any other UA prefix
+// ("access_terminated_error: only available for Coding Agents").
+export const USER_AGENT = `KimiCLI/${KIMI_CLI_VERSION}`
 
 export const OAUTH_HOST = "https://auth.kimi.com"
 export const OAUTH_DEVICE_AUTH_URL = `${OAUTH_HOST}/api/oauth/device_authorization`
