@@ -36,7 +36,7 @@ Three files, 1 job each. Do not add a fourth unless the existing three genuinely
 | `src/constants.ts` | Pinned strings that must mirror upstream kimi-cli (version, endpoints, client id, scope). |
 | `src/headers.ts`   | The seven `X-Msh-*` / UA headers + the persistent `~/.kimi/device_id` file.    |
 | `src/oauth.ts`     | Device-code start, device-code poll, refresh-token exchange, and `GET /coding/v1/models` discovery. |
-| `src/index.ts`     | Plugin entry. Wires `auth` hook (login + loader) and `chat.params` hook.       |
+| `src/index.ts`     | Plugin entry. Wires `auth` (login + loader) plus the Kimi chat hooks/body rewrite. |
 
 Data flow on a chat request:
 
@@ -44,7 +44,7 @@ Data flow on a chat request:
 2. Before instantiating it, opencode calls our `auth.loader`. We return `{ apiKey, fetch }`.
 3. The SDK uses our `fetch` for every HTTP call (models, chat, whatever).
 4. Our `fetch` calls `ensureFresh()` → maybe refreshes → lazily discovers `/coding/v1/models` when needed → sets Authorization + the seven `X-Msh-*` headers → on 401 refreshes once and retries.
-5. Separately, opencode runs the `chat.params` hook and writes `thinking`, `reasoning_effort`, `prompt_cache_key` into `output.options`. opencode wraps those as `{ [providerID]: options }` and the openai-compatible SDK forwards them as top-level body fields. That is why those keys must use **exactly** the wire names (`prompt_cache_key`, `reasoning_effort`, `thinking`).
+5. Separately, opencode runs `chat.headers` and `chat.params`. `chat.headers` computes `thinking`, `reasoning_effort`, and `prompt_cache_key` from `input.model.options` plus the selected `input.message.model.variant`, then passes them to `loader.fetch` via private `x-opencode-kimi-*` headers. `loader.fetch` strips those headers and injects the wire fields into the JSON body. `chat.params` mirrors the same keys into `output.options` only as a forward-compat fallback if opencode later fixes its openai-compatible providerOptions namespace mismatch.
 
 ### Contracts to keep intact
 
@@ -52,7 +52,7 @@ These are the invariants that, if broken, silently degrade K2.6 → K2.5 or prod
 
 1. **`X-Msh-Version` and `User-Agent` must track `kimi-cli`.** Bumping involves exactly one line in `src/constants.ts`. See upstream `research/kimi-cli/src/kimi_cli/constant.py`. The UA prefix is `KimiCLI/` (not `KimiCodeCLI/`) — Moonshot's `kimi-for-coding` backend 403s with `access_terminated_error: only available for Coding Agents such as Kimi CLI, Claude Code, Roo Code…` on any other prefix. Likewise, `X-Msh-Device-Model` must mirror kimi-cli's `_device_model()` shape, including the Darwin/Windows special cases (`macOS <version> <arch>`, `Windows 10/11 <arch>`, Linux `"{system} {release} {machine}"`) — NOT just `{arch}` — and `X-Msh-Os-Version` is the kernel build string from `os.version()`, NOT `"{type} {release}"`. Tested live against `api.kimi.com/coding/v1` on 2026-04-17 — any of those three fields off-spec → 403.
 2. **`X-Msh-Device-Id` must be stable across runs.** Never regenerate a fresh UUID at import time. `getDeviceId()` reads/writes `~/.kimi/device_id`; that path is shared with `kimi-cli` on purpose.
-3. **`Authorization` header is owned by `loader.fetch`.** Anything else (opencode core, the SDK, future hooks) must be overridden. Our `loader` deletes both `authorization` and `Authorization` before setting its own.
+3. **`Authorization` header is owned by `loader.fetch`.** Anything else (opencode core, the SDK, future hooks) must be overridden. Our `loader` deletes both `authorization` and `Authorization` before setting its own. The private `x-opencode-kimi-*` transport headers are also consumed and stripped there; they must never leak upstream.
 4. **Effort ↔ fields mapping** (kimi-cli `llm.py` / `kosong/chat_provider/kimi.py`):
 
    | Effort   | `reasoning_effort` | `thinking`            |
@@ -63,9 +63,9 @@ These are the invariants that, if broken, silently degrade K2.6 → K2.5 or prod
    | `medium` | `"medium"`         | `{type:"enabled"}`    |
    | `high`   | `"high"`           | `{type:"enabled"}`    |
 
-   `auto` is the "let the server decide dynamically" variant — neither field is sent, matching kimi-cli's "nothing passed" default. When no effort is set at all, the plugin still emits `thinking: {type: "enabled"}` because the model is a reasoner. Gate the hook on `input.model.providerID` — NOT `input.provider.info.id`. The `@opencode-ai/plugin` `ProviderContext` type claims `.info.id` exists, but the runtime shape opencode passes (see `research/opencode/packages/opencode/src/session/llm.ts::stream`, ~line 168, `provider: item`) is the flat `ProviderConfig` (`.id`). `input.model.providerID` is what every first-party plugin uses (cloudflare.ts, codex.ts, github-copilot/copilot.ts) and it avoids the runtime crash "undefined is not an object (evaluating 'input.provider.info.id')". Tested live 2026-04-17.
+   `auto` is the "let the server decide dynamically" variant — neither field is sent, matching kimi-cli's "nothing passed" default. When no effort is set at all, the plugin still emits `thinking: {type: "enabled"}` because the model is a reasoner. Compute this from `input.model.options` plus `input.model.variants[input.message.model.variant]`, not from `input.provider.info.id`. The `@opencode-ai/plugin` `ProviderContext` type claims `.info.id` exists, but the runtime shape opencode passes (see `research/opencode/packages/opencode/src/session/llm.ts::stream`, ~line 168, `provider: item`) is the flat `ProviderConfig` (`.id`). `input.model.providerID` is what every first-party plugin uses (cloudflare.ts, codex.ts, github-copilot/copilot.ts) and it avoids the runtime crash "undefined is not an object (evaluating 'input.provider.info.id')". Tested live 2026-04-17.
 
-5. **`prompt_cache_key` only for `kimi-for-coding`.** Never attach it to unrelated models. The check is `input.model.id === MODEL_ID` in `chat.params`.
+5. **`prompt_cache_key` only for `kimi-for-coding`.** Never attach it to unrelated models. The check is `input.model.id === MODEL_ID` in the Kimi chat hooks, and the actual wire injection happens in `loader.fetch`.
 6. **Wire model id comes from `/coding/v1/models`, not from user config.** The opencode-side model id is a stable alias (`MODEL_ID = "kimi-for-coding"`); the plugin calls `GET /coding/v1/models` at login and on every token refresh (mirroring kimi-cli's `refresh_managed_models` in `research/kimi-cli/src/kimi_cli/auth/platforms.py`), caches the first returned `{id, context_length, display_name}` in loader memory, and rewrites the JSON body `model` field inside `loader.fetch` whenever the discovered id differs from `MODEL_ID` (the K2.5 case — server may return `k2p5` instead). A new loader instance re-discovers on first use if needed. K2.6 accounts see `id: "kimi-for-coding"` and the rewrite is a no-op. Do not strip the `kimi-` prefix; send whatever the server returned. Discovery failures are non-fatal (warm cached id still works; 401 retry flushes broken tokens).
 7. **Auth store is opencode's, not kimi-cli's.** We use opencode's auth store for tokens under the `kimi-for-coding-oauth` provider id. Do not read/write `~/.kimi/credentials/kimi-code.json`; that's kimi-cli's file and sharing it across independent apps causes token-race bugs. Also note that opencode's SDK auth schema only persists the standard oauth fields, so model discovery metadata cannot be stored there durably.
 8. **Provider id must not collide with any id in the [models.dev](https://models.dev) catalog.** models.dev publishes `kimi-for-coding` (static `KIMI_API_KEY` → `@ai-sdk/anthropic` → K2.5). If we registered under that same id, `opencode auth login kimi-for-coding` would surface two methods under one entry and users picking the API-key one would silently land on K2.5. We deliberately use `kimi-for-coding-oauth` instead; `MODEL_ID` on the wire stays `kimi-for-coding` (rule 6).
@@ -83,7 +83,7 @@ These are the invariants that, if broken, silently degrade K2.6 → K2.5 or prod
 
 ### What not to do
 
-- ❌ Don't add heuristics that look at the model id outside of `chat.params`. The `auth.loader` fetch is already scoped to this provider; the only place that needs to match on `kimi-for-coding` is the params hook.
+- ❌ Don't add heuristics that look at the model id outside of the Kimi chat hooks / `loader.fetch`. The auth loader is already scoped to this provider; only the chat hooks and the body rewrite need to match on `kimi-for-coding`.
 - ❌ Don't rename the provider id back to `kimi-for-coding` or to anything else listed in models.dev. See rule 8.
 - ❌ Don't add new header values that kimi-cli doesn't send. The fingerprint matters.
 - ❌ Don't call out to other files to "share" the kimi-cli credentials. Different OAuth consumers must have independent refresh-token chains or one will invalidate the other.

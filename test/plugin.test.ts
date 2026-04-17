@@ -38,37 +38,83 @@ async function getHooks() {
   return { hooks, writes }
 }
 
-// ---------- chat.params -----------------------------------------------------
+// ---------- chat hooks ------------------------------------------------------
 
-// Minimal shape for input/output we care about in the params hook.
-// Mirrors the runtime shape opencode actually passes (see
+const INTERNAL_PROMPT_CACHE_KEY_HEADER = "x-opencode-kimi-prompt-cache-key"
+const INTERNAL_REASONING_EFFORT_HEADER = "x-opencode-kimi-reasoning-effort"
+const INTERNAL_THINKING_TYPE_HEADER = "x-opencode-kimi-thinking-type"
+
+// Minimal shape for the chat hook input/output we care about. Mirrors the
+// runtime shape opencode actually passes (see
 // research/opencode/packages/opencode/src/session/llm.ts::stream — `model`
-// has `.providerID` and `.id`; `provider` is the flat ProviderConfig).
-type ParamsInput = {
+// has `.providerID`, `.id`, `.options`, `.variants`; the selected variant
+// rides on `message.model.variant`).
+type HookInput = {
+  agent: string
   provider: { id: string }
-  model: { providerID: string; id: string }
+  model: {
+    providerID: string
+    id: string
+    options?: Record<string, unknown>
+    variants?: Record<string, Record<string, unknown>>
+  }
+  message: { model: { variant?: string } }
   sessionID: string
 }
 type ParamsOutput = { options: Record<string, unknown> }
+type HeadersOutput = { headers: Record<string, string> }
+
+type HookInputOptions = {
+  providerID?: string
+  modelID?: string
+  sessionID?: string
+  modelOptions?: Record<string, unknown>
+  variants?: Record<string, Record<string, unknown>>
+  variant?: string
+}
+
+function makeHookInput(options: HookInputOptions = {}): HookInput {
+  const providerID = options.providerID ?? PROVIDER_ID
+  return {
+    agent: "test-agent",
+    provider: { id: providerID },
+    model: {
+      providerID,
+      id: options.modelID ?? MODEL_ID,
+      options: options.modelOptions,
+      variants: options.variants,
+    },
+    message: {
+      model: {
+        variant: options.variant,
+      },
+    },
+    sessionID: options.sessionID ?? "sess-1",
+  }
+}
+
 function callParams(
-  hook: (i: ParamsInput, o: ParamsOutput) => Promise<void> | void,
-  providerID: string,
-  modelID: string,
+  hook: (i: HookInput, o: ParamsOutput) => Promise<void> | void,
+  input: HookInputOptions = {},
   options: Record<string, unknown> = {},
-  sessionID = "sess-1",
 ) {
   const output: ParamsOutput = { options: { ...options } }
-  const res = hook(
-    { provider: { id: providerID }, model: { providerID, id: modelID }, sessionID },
-    output,
-  )
+  const res = hook(makeHookInput(input), output)
+  return { res, output }
+}
+
+function callHeaders(hook: (i: HookInput, o: HeadersOutput) => Promise<void> | void, input: HookInputOptions = {}) {
+  const output: HeadersOutput = { headers: {} }
+  const res = hook(makeHookInput(input), output)
   return { res, output }
 }
 
 test("chat.params: no-op for other providers (AGENTS.md rule: gated on PROVIDER_ID)", async () => {
   const { hooks } = await getHooks()
   const hook = hooks["chat.params"]!
-  const { output } = callParams(hook, "some-other-provider", MODEL_ID, { reasoning_effort: "high" })
+  const { output } = callParams(hook, { providerID: "some-other-provider", modelOptions: { reasoning_effort: "high" } }, {
+    reasoning_effort: "high",
+  })
   // Untouched — no prompt_cache_key, no thinking added.
   expect(output.options).toEqual({ reasoning_effort: "high" })
 })
@@ -76,7 +122,7 @@ test("chat.params: no-op for other providers (AGENTS.md rule: gated on PROVIDER_
 test("chat.params: no-op for other models under our provider (rule 5 gating)", async () => {
   const { hooks } = await getHooks()
   const hook = hooks["chat.params"]!
-  const { output } = callParams(hook, PROVIDER_ID, "kimi-something-else")
+  const { output } = callParams(hook, { modelID: "kimi-something-else" })
   expect(output.options.prompt_cache_key).toBeUndefined()
   expect(output.options.thinking).toBeUndefined()
 })
@@ -84,7 +130,7 @@ test("chat.params: no-op for other models under our provider (rule 5 gating)", a
 test("chat.params: attaches prompt_cache_key = sessionID for kimi-for-coding only", async () => {
   const { hooks } = await getHooks()
   const hook = hooks["chat.params"]!
-  const { output } = await callParams(hook, PROVIDER_ID, MODEL_ID, {}, "sess-42")
+  const { output } = await callParams(hook, { sessionID: "sess-42" })
   expect(output.options.prompt_cache_key).toBe("sess-42")
 })
 
@@ -106,9 +152,11 @@ const EFFORT_MATRIX: Array<{
 
 test("chat.params: effort=auto → no reasoning_effort, no thinking (server picks dynamically)", async () => {
   const { hooks } = await getHooks()
-  const { output } = await callParams(hooks["chat.params"]!, PROVIDER_ID, MODEL_ID, {
-    reasoning_effort: "auto",
-  })
+  const { output } = await callParams(
+    hooks["chat.params"]!,
+    { modelOptions: { reasoning_effort: "auto" } },
+    { reasoning_effort: "auto" },
+  )
   expect(output.options.reasoning_effort).toBeUndefined()
   expect(output.options.reasoningEffort).toBeUndefined()
   expect(output.options.thinking).toBeUndefined()
@@ -116,7 +164,7 @@ test("chat.params: effort=auto → no reasoning_effort, no thinking (server pick
 for (const row of EFFORT_MATRIX) {
   test(`chat.params: effort=${JSON.stringify(row.in)} → effort=${row.effort}, thinking=${row.thinkingType}`, async () => {
     const { hooks } = await getHooks()
-    const { output } = await callParams(hooks["chat.params"]!, PROVIDER_ID, MODEL_ID, row.in)
+    const { output } = await callParams(hooks["chat.params"]!, { modelOptions: row.in }, row.in)
     expect(output.options.reasoning_effort).toBe(row.effort)
     expect(output.options.thinking).toEqual({ type: row.thinkingType })
   })
@@ -125,10 +173,49 @@ for (const row of EFFORT_MATRIX) {
 test("chat.params: `reasoningEffort` (camelCase) input also drives the mapping", async () => {
   // opencode may use camelCase upstream; the plugin accepts either.
   const { hooks } = await getHooks()
-  const { output } = await callParams(hooks["chat.params"]!, PROVIDER_ID, MODEL_ID, { reasoningEffort: "off" })
+  const { output } = await callParams(
+    hooks["chat.params"]!,
+    { modelOptions: { reasoningEffort: "off" } },
+    { reasoningEffort: "off" },
+  )
   expect(output.options.thinking).toEqual({ type: "disabled" })
   expect(output.options.reasoning_effort).toBeUndefined()
   expect(output.options.reasoningEffort).toBeUndefined()
+})
+
+test("chat.headers: default request enables thinking and carries prompt_cache_key", async () => {
+  const { hooks } = await getHooks()
+  const { output } = await callHeaders(hooks["chat.headers"]!)
+  expect(output.headers[INTERNAL_PROMPT_CACHE_KEY_HEADER]).toBe("sess-1")
+  expect(output.headers[INTERNAL_THINKING_TYPE_HEADER]).toBe("enabled")
+  expect(output.headers[INTERNAL_REASONING_EFFORT_HEADER]).toBeUndefined()
+})
+
+test("chat.headers: selected variant overrides model options for the wire effort mapping", async () => {
+  const { hooks } = await getHooks()
+  const { output } = await callHeaders(hooks["chat.headers"]!, {
+    modelOptions: { reasoning_effort: "high" },
+    variants: {
+      auto: { reasoning_effort: "auto" },
+      off: { reasoning_effort: "off" },
+      low: { reasoning_effort: "low" },
+    },
+    variant: "off",
+  })
+  expect(output.headers[INTERNAL_PROMPT_CACHE_KEY_HEADER]).toBe("sess-1")
+  expect(output.headers[INTERNAL_THINKING_TYPE_HEADER]).toBe("disabled")
+  expect(output.headers[INTERNAL_REASONING_EFFORT_HEADER]).toBeUndefined()
+})
+
+test("chat.headers: effort=auto omits both thinking and reasoning_effort", async () => {
+  const { hooks } = await getHooks()
+  const { output } = await callHeaders(hooks["chat.headers"]!, {
+    variants: { auto: { reasoning_effort: "auto" } },
+    variant: "auto",
+  })
+  expect(output.headers[INTERNAL_PROMPT_CACHE_KEY_HEADER]).toBe("sess-1")
+  expect(output.headers[INTERNAL_THINKING_TYPE_HEADER]).toBeUndefined()
+  expect(output.headers[INTERNAL_REASONING_EFFORT_HEADER]).toBeUndefined()
 })
 
 // ---------- auth.loader -----------------------------------------------------
@@ -185,6 +272,69 @@ test("auth.loader: owns Authorization and strips any caller-supplied value (rule
   expect(h["x-msh-platform"]).toBe("kimi_cli")
   expect(h["x-msh-version"]).toBeDefined()
   expect(h["x-msh-device-id"]).toMatch(/^[0-9a-f]{32}$/)
+})
+
+test("auth.loader: injects default thinking via private headers and strips them upstream", async () => {
+  const { hooks } = await getHooks()
+  const { output: headerOutput } = await callHeaders(hooks["chat.headers"]!, {
+    sessionID: "sess-default",
+  })
+  mock = installFetchMock((call) => {
+    if (call.url.endsWith("/coding/v1/models")) {
+      return { body: { data: [{ id: MODEL_ID, context_length: 262144 }] } }
+    }
+    return { body: { ok: true } }
+  })
+  const { fetch: f } = await getLoaderFetch(async () => validAuth())
+  await f("https://api.kimi.com/coding/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      ...headerOutput.headers,
+    },
+    body: JSON.stringify({ model: MODEL_ID, messages: [] }),
+  })
+  const upstream = mock.calls[1]!
+  expect(upstream.headers[INTERNAL_PROMPT_CACHE_KEY_HEADER]).toBeUndefined()
+  expect(upstream.headers[INTERNAL_REASONING_EFFORT_HEADER]).toBeUndefined()
+  expect(upstream.headers[INTERNAL_THINKING_TYPE_HEADER]).toBeUndefined()
+  expect(JSON.parse(upstream.body as string)).toEqual({
+    model: MODEL_ID,
+    messages: [],
+    prompt_cache_key: "sess-default",
+    thinking: { type: "enabled" },
+  })
+})
+
+test("auth.loader: injects selected reasoning_effort from private headers into the wire body", async () => {
+  const { hooks } = await getHooks()
+  const { output: headerOutput } = await callHeaders(hooks["chat.headers"]!, {
+    sessionID: "sess-high",
+    variants: { high: { reasoning_effort: "high" } },
+    variant: "high",
+  })
+  mock = installFetchMock((call) => {
+    if (call.url.endsWith("/coding/v1/models")) {
+      return { body: { data: [{ id: MODEL_ID, context_length: 262144 }] } }
+    }
+    return { body: { ok: true } }
+  })
+  const { fetch: f } = await getLoaderFetch(async () => validAuth())
+  await f("https://api.kimi.com/coding/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      ...headerOutput.headers,
+    },
+    body: JSON.stringify({ model: MODEL_ID, messages: [] }),
+  })
+  expect(JSON.parse(mock.calls[1]!.body as string)).toEqual({
+    model: MODEL_ID,
+    messages: [],
+    prompt_cache_key: "sess-high",
+    reasoning_effort: "high",
+    thinking: { type: "enabled" },
+  })
 })
 
 test("auth.loader: refreshes when expiry is within safety window", async () => {

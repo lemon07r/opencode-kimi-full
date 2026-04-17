@@ -22,6 +22,108 @@ type ModelDiscovery = {
   model_display?: string
 }
 
+type ThinkingType = "enabled" | "disabled"
+
+type KimiBodyFields = {
+  prompt_cache_key?: string
+  thinking?: { type: ThinkingType }
+  reasoning_effort?: string
+}
+
+type KimiHookInput = {
+  sessionID: string
+  model: {
+    providerID: string
+    id: string
+    options?: Record<string, unknown>
+    variants?: Record<string, Record<string, unknown>>
+  }
+  message: {
+    model: {
+      variant?: string
+    }
+  }
+}
+
+const INTERNAL_PROMPT_CACHE_KEY_HEADER = "x-opencode-kimi-prompt-cache-key"
+const INTERNAL_REASONING_EFFORT_HEADER = "x-opencode-kimi-reasoning-effort"
+const INTERNAL_THINKING_TYPE_HEADER = "x-opencode-kimi-thinking-type"
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return
+  return value as Record<string, unknown>
+}
+
+function asThinking(value: unknown): KimiBodyFields["thinking"] | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return
+  const type = (value as { type?: unknown }).type
+  if (type !== "enabled" && type !== "disabled") return
+  return { type }
+}
+
+function pickEffort(options: Record<string, unknown> | undefined) {
+  const effort = options?.reasoning_effort ?? options?.reasoningEffort
+  return typeof effort === "string" ? effort : undefined
+}
+
+function resolveKimiBodyFields(input: KimiHookInput): KimiBodyFields | undefined {
+  if (input.model.providerID !== PROVIDER_ID) return
+  if (input.model.id !== MODEL_ID) return
+
+  const modelOptions = asRecord(input.model.options)
+  const variantOptions = input.message.model.variant
+    ? asRecord(input.model.variants?.[input.message.model.variant])
+    : undefined
+
+  const fields: KimiBodyFields = { prompt_cache_key: input.sessionID }
+  const thinking = asThinking(variantOptions?.thinking) ?? asThinking(modelOptions?.thinking)
+  const effort = pickEffort(variantOptions) ?? pickEffort(modelOptions)
+
+  if (effort === "auto") return fields
+  if (effort === "off") {
+    fields.thinking = { type: "disabled" }
+    return fields
+  }
+  if (effort) fields.reasoning_effort = effort
+  fields.thinking = thinking ?? { type: "enabled" }
+  return fields
+}
+
+function applyKimiBodyFields(target: Record<string, unknown>, fields: KimiBodyFields) {
+  target.prompt_cache_key = fields.prompt_cache_key
+  if (fields.reasoning_effort) {
+    target.reasoning_effort = fields.reasoning_effort
+  } else {
+    delete target.reasoning_effort
+  }
+  delete target.reasoningEffort
+  if (fields.thinking) {
+    target.thinking = fields.thinking
+    return
+  }
+  delete target.thinking
+}
+
+function consumeInternalKimiBodyFields(headers: Headers): KimiBodyFields {
+  const fields: KimiBodyFields = {}
+  const promptCacheKey = headers.get(INTERNAL_PROMPT_CACHE_KEY_HEADER)
+  if (promptCacheKey) fields.prompt_cache_key = promptCacheKey
+  const reasoningEffort = headers.get(INTERNAL_REASONING_EFFORT_HEADER)
+  if (reasoningEffort) fields.reasoning_effort = reasoningEffort
+  const thinkingType = headers.get(INTERNAL_THINKING_TYPE_HEADER)
+  if (thinkingType === "enabled" || thinkingType === "disabled") {
+    fields.thinking = { type: thinkingType }
+  }
+  headers.delete(INTERNAL_PROMPT_CACHE_KEY_HEADER)
+  headers.delete(INTERNAL_REASONING_EFFORT_HEADER)
+  headers.delete(INTERNAL_THINKING_TYPE_HEADER)
+  return fields
+}
+
+function hasKimiBodyFields(fields: KimiBodyFields) {
+  return Boolean(fields.prompt_cache_key || fields.reasoning_effort || fields.thinking)
+}
+
 function pickModelInfo(models: KimiModelInfo[]): ModelDiscovery {
   const picked = models.find((m) => m.id === MODEL_ID) ?? models[0]
   if (!picked) return {}
@@ -83,11 +185,13 @@ function buildConfigBlock(info: { model_id: string; context_length?: number; dis
  *                  (c) lazily discovers the current wire model id from
  *                  `GET /coding/v1/models`, and (d) retries once with a forced
  *                  refresh on 401.
- *   3. `chat.params` — adds the Kimi-specific request body fields the model
- *                  actually needs: `thinking.type`, `reasoning_effort`, and
- *                  `prompt_cache_key`. These are placed under the SDK-scoped
- *                  options bag so `@ai-sdk/openai-compatible` forwards them
- *                  verbatim as top-level JSON body fields.
+ *   3. `chat.headers` — computes the Kimi-specific request body fields the
+ *                  model actually needs (`thinking.type`,
+ *                  `reasoning_effort`, `prompt_cache_key`) and passes them to
+ *                  `loader.fetch` via private headers.
+ *   4. `chat.params` — mirrors the same fields into `output.options` for
+ *                  forward-compat if opencode fixes its current
+ *                  openai-compatible providerOptions namespace mismatch.
  */
 const plugin: Plugin = async ({ client }) => {
   // --- helpers ---------------------------------------------------------------
@@ -182,6 +286,12 @@ const plugin: Plugin = async ({ client }) => {
               new Headers(init?.headers).forEach((value, key) => {
                 headers.set(key, value)
               })
+              // opencode currently namespaces providerOptions for
+              // @ai-sdk/openai-compatible under the provider id, while the SDK
+              // reads them back under the human provider name. Carry Kimi-only
+              // body fields through private headers instead so the wire request
+              // stays correct regardless of that upstream mismatch.
+              const kimiBodyFields = consumeInternalKimiBodyFields(headers)
               // Strip anything the upstream SDK put on. Our values win.
               headers.delete("authorization")
               headers.delete("Authorization")
@@ -213,11 +323,16 @@ const plugin: Plugin = async ({ client }) => {
                         .text()
                         .catch(() => undefined)
                     : undefined
-              if (targetModel && targetModel !== MODEL_ID && originalBody) {
+              if (((targetModel && targetModel !== MODEL_ID) || hasKimiBodyFields(kimiBodyFields)) && originalBody) {
                 try {
                   const parsed = JSON.parse(originalBody)
-                  if (parsed && typeof parsed === "object" && parsed.model === MODEL_ID) {
-                    parsed.model = targetModel
+                  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+                    if (targetModel && targetModel !== MODEL_ID && parsed.model === MODEL_ID) {
+                      parsed.model = targetModel
+                    }
+                    if (hasKimiBodyFields(kimiBodyFields)) {
+                      applyKimiBodyFields(parsed as Record<string, unknown>, kimiBodyFields)
+                    }
                     newInit = { ...init, body: JSON.stringify(parsed) }
                   }
                 } catch {
@@ -296,62 +411,32 @@ const plugin: Plugin = async ({ client }) => {
       ],
     },
 
+    "chat.headers": async (input, output) => {
+      const fields = resolveKimiBodyFields(input as KimiHookInput)
+      if (!fields) return
+      if (fields.prompt_cache_key) {
+        output.headers[INTERNAL_PROMPT_CACHE_KEY_HEADER] = fields.prompt_cache_key
+      }
+      if (fields.reasoning_effort) {
+        output.headers[INTERNAL_REASONING_EFFORT_HEADER] = fields.reasoning_effort
+      }
+      if (fields.thinking) {
+        output.headers[INTERNAL_THINKING_TYPE_HEADER] = fields.thinking.type
+      }
+    },
+
     /**
-     * Inject Kimi-specific body fields.
+     * Mirror Kimi-specific body fields into providerOptions when possible.
      *
-     * kimi-cli sends BOTH `reasoning_effort` and a `thinking` object at the
-     * top level. The @ai-sdk/openai-compatible SDK forwards unknown keys in
-     * `providerOptions[<sdkKey>]` as top-level body fields, which is exactly
-     * what we need. The sdkKey for @ai-sdk/openai-compatible is the
-     * providerID, so we write to `output.options` which opencode then wraps
-     * as `{ [providerID]: options }` via ProviderTransform.providerOptions.
+     * The real load-bearing path is `chat.headers` → `loader.fetch`, because
+     * current opencode/openai-compatible builds disagree on the providerOptions
+     * namespace. We still normalize `output.options` so the plugin keeps
+     * working if upstream aligns those keys later.
      */
     "chat.params": async (input, output) => {
-      // Gate on model.providerID (the field opencode's llm.ts actually
-      // populates — `input.provider` is the flat `ProviderConfig` passed by
-      // `packages/opencode/src/session/llm.ts::stream`, so `input.provider.id`
-      // works too, but the @opencode-ai/plugin type for `ProviderContext`
-      // claims `.info.id` exists — the runtime shape disagrees. Using
-      // `input.model.providerID` is what every first-party plugin does
-      // (cloudflare.ts, codex.ts, github-copilot/copilot.ts).
-      if (input.model.providerID !== PROVIDER_ID) return
-      if (input.model.id !== MODEL_ID) return
-
-      // `prompt_cache_key` — stable per conversation so the backend can reuse
-      // its KV cache across turns. opencode's sessionID is exactly that.
-      output.options.prompt_cache_key = input.sessionID
-
-      // Thinking / reasoning effort. We mirror kimi-cli's mapping:
-      //   - effort `off`   → no reasoning_effort, thinking.type = "disabled"
-      //   - effort `auto`  → omit both; let Moonshot pick dynamically
-      //   - effort ∈ {low, medium, high} → reasoning_effort = effort,
-      //     thinking.type = "enabled"
-      //
-      // Effort is read from opencode's options bag. It may be present as:
-      //   - `reasoning_effort` (wire shape; what model.variants typically set)
-      //   - `reasoningEffort`  (opencode camelCase passthrough)
-      //   - `reasoning.effort` / `providerOptions.<id>.reasoningEffort` (rare)
-      // We accept the first two, normalize, and leave any caller-supplied
-      // `thinking` object alone if they already set one.
-      const effort = output.options.reasoning_effort ?? output.options.reasoningEffort
-      if (effort === "auto") {
-        // Explicit "auto" variant: remove both knobs so the server picks.
-        delete output.options.reasoning_effort
-        delete output.options.reasoningEffort
-        delete output.options.thinking
-      } else if (typeof effort === "string" && effort !== "off") {
-        output.options.reasoning_effort = effort
-        delete output.options.reasoningEffort
-        output.options.thinking = output.options.thinking ?? { type: "enabled" }
-      } else if (effort === "off") {
-        delete output.options.reasoning_effort
-        delete output.options.reasoningEffort
-        output.options.thinking = { type: "disabled" }
-      } else if (!output.options.thinking) {
-        // No effort set at all → thinking enabled, no reasoning_effort
-        // (server picks). Matches kimi-cli's "nothing passed" default.
-        output.options.thinking = { type: "enabled" }
-      }
+      const fields = resolveKimiBodyFields(input as KimiHookInput)
+      if (!fields) return
+      applyKimiBodyFields(output.options, fields)
     },
   }
 }
