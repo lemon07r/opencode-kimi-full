@@ -1,7 +1,7 @@
 import type { Plugin } from "@opencode-ai/plugin"
 import { MODEL_ID, PROVIDER_ID, REFRESH_SAFETY_WINDOW_MS } from "./constants.ts"
 import { kimiHeaders } from "./headers.ts"
-import { listModels, pollDeviceToken, refreshToken, startDeviceAuth } from "./oauth.ts"
+import { type KimiModelInfo, listModels, pollDeviceToken, refreshToken, startDeviceAuth } from "./oauth.ts"
 
 // IMPORTANT: this module must have exactly ONE export — the default plugin
 // function. opencode's plugin loader (packages/opencode/src/plugin/index.ts →
@@ -14,18 +14,22 @@ type OAuthAuth = {
   refresh: string
   access: string
   expires: number
-  // Discovered from `GET /coding/v1/models` at login and on every refresh.
-  // Mirrors kimi-cli's `refresh_managed_models`. Absent on auth records
-  // created before v1.1.0; fallback to MODEL_ID and no context-length hint.
-  //
-  // `model_id` is the slug Moonshot actually expects on the wire for this
-  // account. In practice every current tier returns `kimi-for-coding`, but
-  // the field exists so a future server-side slug change doesn't require a
-  // plugin update. `context_length` is surfaced to users in the post-login
-  // config block so their opencode config matches their real entitlement.
+}
+
+type ModelDiscovery = {
   model_id?: string
   context_length?: number
   model_display?: string
+}
+
+function pickModelInfo(models: KimiModelInfo[]): ModelDiscovery {
+  const picked = models.find((m) => m.id === MODEL_ID) ?? models[0]
+  if (!picked) return {}
+  return {
+    model_id: picked.id,
+    context_length: picked.context_length,
+    model_display: picked.display_name,
+  }
 }
 
 function buildConfigBlock(info: { model_id: string; context_length?: number; display?: string }) {
@@ -46,6 +50,7 @@ function buildConfigBlock(info: { model_id: string; context_length?: number; dis
             [MODEL_ID]: {
               name,
               reasoning: true,
+              options: {},
               ...(ctx > 0 ? { limit: { context: ctx } } : {}),
               variants: {
                 off: { reasoning_effort: "off" },
@@ -75,7 +80,9 @@ function buildConfigBlock(info: { model_id: string; context_length?: number; dis
  *                  a custom `fetch` that (a) refreshes the access token when
  *                  it is about to expire, (b) injects the seven X-Msh-* / UA
  *                  headers on every upstream call (models list, chat, etc.),
- *                  and (c) retries once with a forced refresh on 401.
+ *                  (c) lazily discovers the current wire model id from
+ *                  `GET /coding/v1/models`, and (d) retries once with a forced
+ *                  refresh on 401.
  *   3. `chat.params` — adds the Kimi-specific request body fields the model
  *                  actually needs: `thinking.type`, `reasoning_effort`, and
  *                  `prompt_cache_key`. These are placed under the SDK-scoped
@@ -108,40 +115,50 @@ const plugin: Plugin = async ({ client }) => {
        * this loader callback. Writes still go through `client.auth.set`.
        */
       loader: async (readAuth) => {
-        const ensureFresh = async (force = false): Promise<OAuthAuth> => {
-          const current = (await readAuth()) as OAuthAuth | undefined
+        let discovery: ModelDiscovery = {}
+
+        const discoverModelInfo = async (access: string): Promise<ModelDiscovery> => {
+          // opencode's SDK auth schema only persists the standard oauth fields
+          // (`refresh`/`access`/`expires`) on `client.auth.set`, so discovery
+          // cannot live durably in auth.json across refresh writes. Cache it in
+          // this loader instance instead, and repopulate lazily on startup.
+          const next = pickModelInfo(await listModels(access))
+          if (next.model_id) discovery = next
+          return discovery
+        }
+
+        const ensureDiscovered = async (auth: OAuthAuth & Partial<ModelDiscovery>) => {
+          if (!discovery.model_id && auth.model_id) {
+            discovery = {
+              model_id: auth.model_id,
+              context_length: auth.context_length,
+              model_display: auth.model_display,
+            }
+          }
+          if (discovery.model_id) return { ...auth, ...discovery }
+          try {
+            return { ...auth, ...(await discoverModelInfo(auth.access)) }
+          } catch {
+            return { ...auth, ...discovery }
+          }
+        }
+
+        const ensureFresh = async (force = false): Promise<OAuthAuth & ModelDiscovery> => {
+          const current = (await readAuth()) as (OAuthAuth & Partial<ModelDiscovery>) | undefined
           if (!current || current.type !== "oauth")
             throw new Error(
               "kimi-for-coding-oauth: not logged in — run `opencode auth login kimi-for-coding-oauth`",
             )
-          if (!force && !isExpiring(current)) return current
+          if (!force && !isExpiring(current)) return ensureDiscovered(current)
           const tokens = await refreshToken(current.refresh)
           // kimi-cli re-runs `refresh_managed_models` on every successful
           // refresh — we mirror that so entitlement changes (e.g. an
           // account gaining/losing K2.6 access) are picked up without a
           // full re-login. Failures here must not block the refresh: a
-          // stale cached model_id still works for the common case, and
+          // warm in-memory discovery still works for the common case, and
           // the request-path 401 retry will flush a broken access token.
-          let discovered: Pick<OAuthAuth, "model_id" | "context_length" | "model_display"> = {
-            model_id: current.model_id,
-            context_length: current.context_length,
-            model_display: current.model_display,
-          }
           try {
-            const models = await listModels(tokens.access_token)
-            // Prefer the canonical `kimi-for-coding` id when the server
-            // offers it; otherwise take the first entry. Mirrors kimi-cli's
-            // behavior of treating `/models` as authoritative while keeping
-            // a stable slug when possible, so users see the same id across
-            // tiers in practice.
-            const picked = models.find((m) => m.id === MODEL_ID) ?? models[0]
-            if (picked) {
-              discovered = {
-                model_id: picked.id,
-                context_length: picked.context_length,
-                model_display: picked.display_name,
-              }
-            }
+            await discoverModelInfo(tokens.access_token)
           } catch {
             /* keep previous discovery */
           }
@@ -150,10 +167,9 @@ const plugin: Plugin = async ({ client }) => {
             refresh: tokens.refresh_token,
             access: tokens.access_token,
             expires: Date.now() + tokens.expires_in * 1000,
-            ...discovered,
           }
           await persistAuth(next)
-          return next
+          return { ...next, ...discovery }
         }
 
         return {
@@ -161,8 +177,11 @@ const plugin: Plugin = async ({ client }) => {
           // requires a truthy apiKey to wire things up; use a sentinel.
           apiKey: "kimi-for-coding-oauth",
           fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
-            const doRequest = async (auth: OAuthAuth) => {
-              const headers = new Headers(init?.headers)
+            const doRequest = async (auth: OAuthAuth & ModelDiscovery) => {
+              const headers = new Headers(input instanceof Request ? input.headers : undefined)
+              new Headers(init?.headers).forEach((value, key) => {
+                headers.set(key, value)
+              })
               // Strip anything the upstream SDK put on. Our values win.
               headers.delete("authorization")
               headers.delete("Authorization")
@@ -185,9 +204,18 @@ const plugin: Plugin = async ({ client }) => {
               // exactly the id it got back from `/models`.
               let newInit = init
               const targetModel = auth.model_id
-              if (targetModel && targetModel !== MODEL_ID && init?.body && typeof init.body === "string") {
+              const originalBody =
+                typeof init?.body === "string"
+                  ? init.body
+                  : input instanceof Request && init?.body === undefined
+                    ? await input
+                        .clone()
+                        .text()
+                        .catch(() => undefined)
+                    : undefined
+              if (targetModel && targetModel !== MODEL_ID && originalBody) {
                 try {
-                  const parsed = JSON.parse(init.body)
+                  const parsed = JSON.parse(originalBody)
                   if (parsed && typeof parsed === "object" && parsed.model === MODEL_ID) {
                     parsed.model = targetModel
                     newInit = { ...init, body: JSON.stringify(parsed) }
@@ -231,31 +259,21 @@ const plugin: Plugin = async ({ client }) => {
                   // after approval (mirrors kimi-cli's login flow).
                   // Failures here degrade gracefully — the plugin still
                   // works; users just don't see the config-block hint and
-                  // the next token refresh will re-attempt discovery.
-                  let discovered: Pick<OAuthAuth, "model_id" | "context_length" | "model_display"> = {}
+                  // the loader will re-attempt discovery before the first
+                  // model-rewrite that needs it.
                   try {
-                    const models = await listModels(tokens.access_token)
-                    // Same preference as the loader: canonical id wins,
-                    // else first. In practice every tier currently returns
-                    // `kimi-for-coding`; the fallback exists only so a
-                    // future server change can't brick the plugin.
-                    const picked = models.find((m) => m.id === MODEL_ID) ?? models[0]
-                    if (picked) {
-                      discovered = {
-                        model_id: picked.id,
-                        context_length: picked.context_length,
-                        model_display: picked.display_name,
-                      }
+                    const discovered = pickModelInfo(await listModels(tokens.access_token))
+                    if (discovered.model_id) {
                       // Print a ready-to-paste config block. opencode shows
                       // this next to the "Authorized" message.
                       const block = buildConfigBlock({
-                        model_id: picked.id,
-                        context_length: picked.context_length,
-                        display: picked.display_name,
+                        model_id: discovered.model_id,
+                        context_length: discovered.context_length,
+                        display: discovered.model_display,
                       })
                       console.log(
-                        `\n✓ Authorized for Kimi For Coding (model: ${picked.id}${
-                          picked.context_length ? `, context ${picked.context_length}` : ""
+                        `\n✓ Authorized for Kimi For Coding (model: ${discovered.model_id}${
+                          discovered.context_length ? `, context ${discovered.context_length}` : ""
                         })\n\nAdd this to your opencode config (~/.config/opencode/opencode.json) if you haven't already:\n\n${block}\n`,
                       )
                     }
@@ -267,7 +285,6 @@ const plugin: Plugin = async ({ client }) => {
                     refresh: tokens.refresh_token,
                     access: tokens.access_token,
                     expires: Date.now() + tokens.expires_in * 1000,
-                    ...discovered,
                   }
                 } catch {
                   return { type: "failed" }

@@ -62,6 +62,16 @@ test("refreshToken posts grant_type=refresh_token and returns normalized shape",
   })
 })
 
+test("refreshToken retries transient 5xx and non-JSON responses before succeeding", async () => {
+  mock = installFetchMock((_, i) => {
+    if (i === 0) return { status: 502, bodyText: "<html>gateway</html>" }
+    return { body: { access_token: "a3", refresh_token: "r3", token_type: "Bearer", expires_in: 900 } }
+  })
+  const t = await refreshToken("retry-me")
+  expect(t.access_token).toBe("a3")
+  expect(mock.calls).toHaveLength(2)
+})
+
 test("postForm wraps non-OK responses with error.code from the JSON body", async () => {
   mock = installFetchMock(() => ({
     status: 400,
@@ -70,8 +80,8 @@ test("postForm wraps non-OK responses with error.code from the JSON body", async
   await expect(refreshToken("bad")).rejects.toThrow(/invalid_grant/)
 })
 
-test("postForm throws a clear error when the server returns non-JSON", async () => {
-  mock = installFetchMock(() => ({ status: 502, bodyText: "<html>gateway</html>" }))
+test("refreshToken throws a clear error when a non-retryable response is non-JSON", async () => {
+  mock = installFetchMock(() => ({ status: 400, bodyText: "<html>bad request</html>" }))
   await expect(refreshToken("x")).rejects.toThrow(/non-JSON response/)
 })
 

@@ -18,14 +18,28 @@ export function installFetchMock(responder: Responder) {
   const calls: FetchCall[] = []
   const original = globalThis.fetch
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url
+    const request = input instanceof Request ? input : undefined
+    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url
     const headers: Record<string, string> = {}
-    const hs = new Headers(init?.headers)
+    const hs = new Headers(request?.headers)
+    new Headers(init?.headers).forEach((v, k) => {
+      hs.set(k, v)
+    })
     hs.forEach((v, k) => {
       headers[k] = v
     })
-    const body = typeof init?.body === "string" ? init.body : init?.body == null ? undefined : String(init.body)
-    const call: FetchCall = { url, method: (init?.method ?? "GET").toUpperCase(), headers, body }
+    const body =
+      typeof init?.body === "string"
+        ? init.body
+        : request && init?.body === undefined
+          ? await request
+              .clone()
+              .text()
+              .catch(() => undefined)
+          : init?.body == null
+            ? undefined
+            : String(init.body)
+    const call: FetchCall = { url, method: (init?.method ?? request?.method ?? "GET").toUpperCase(), headers, body }
     calls.push(call)
     const r = responder(call, calls.length - 1)
     const status = r.status ?? 200

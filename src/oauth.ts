@@ -25,6 +25,9 @@ export type TokenResponse = {
   expires_in: number
 }
 
+const REFRESH_RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504])
+const REFRESH_MAX_RETRIES = 3
+
 function formBody(params: Record<string, string>): string {
   return new URLSearchParams(params).toString()
 }
@@ -95,11 +98,70 @@ export async function pollDeviceToken(device: DeviceAuth): Promise<TokenResponse
 }
 
 export async function refreshToken(refresh: string): Promise<TokenResponse> {
-  return postForm<TokenResponse>(OAUTH_TOKEN_URL, {
-    client_id: OAUTH_CLIENT_ID,
-    refresh_token: refresh,
-    grant_type: OAUTH_REFRESH_GRANT,
-  })
+  let lastError: unknown
+  for (let attempt = 0; attempt < REFRESH_MAX_RETRIES; attempt++) {
+    try {
+      const res = await fetch(OAUTH_TOKEN_URL, {
+        method: "POST",
+        headers: {
+          ...kimiHeaders(),
+          "Content-Type": "application/x-www-form-urlencoded",
+          Accept: "application/json",
+        },
+        body: formBody({
+          client_id: OAUTH_CLIENT_ID,
+          refresh_token: refresh,
+          grant_type: OAUTH_REFRESH_GRANT,
+        }),
+      })
+      const text = await res.text()
+      let json: any = {}
+      try {
+        json = text ? JSON.parse(text) : {}
+      } catch {
+        if (REFRESH_RETRYABLE_STATUSES.has(res.status)) {
+          const err = new Error(
+            `kimi oauth refresh transient ${res.status}: non-JSON response: ${text.slice(0, 200)}`,
+          ) as Error & { status?: number }
+          err.status = res.status
+          throw err
+        }
+        const err = new Error(
+          `kimi oauth: non-JSON response from ${OAUTH_TOKEN_URL} (status ${res.status}): ${text.slice(0, 200)}`,
+        ) as Error & { status?: number }
+        err.status = res.status
+        throw err
+      }
+
+      if (res.status === 401 || res.status === 403) {
+        const err = new Error(`kimi oauth ${json.error ?? res.status}: ${json.error_description ?? text}`) as Error & {
+          status?: number
+        }
+        err.status = res.status
+        throw err
+      }
+
+      if (!res.ok) {
+        const err = new Error(`kimi oauth ${json.error ?? res.status}: ${json.error_description ?? text}`) as Error & {
+          code?: string
+          status?: number
+        }
+        err.code = json.error
+        err.status = res.status
+        throw err
+      }
+
+      return json as TokenResponse
+    } catch (err) {
+      const status = (err as { status?: number }).status
+      const retryable = status === undefined || REFRESH_RETRYABLE_STATUSES.has(status)
+      lastError = err
+      if (!retryable || attempt === REFRESH_MAX_RETRIES - 1) throw err
+      await new Promise((r) => setTimeout(r, 2 ** attempt * 1000))
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error("kimi oauth: token refresh failed")
 }
 
 /**

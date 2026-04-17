@@ -3,7 +3,7 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { KIMI_CLI_VERSION, USER_AGENT } from "../src/constants.ts"
-import { getDeviceId, kimiHeaders } from "../src/headers.ts"
+import { asciiHeaderValue, getDeviceId, kimiDeviceModel, kimiHeaders } from "../src/headers.ts"
 
 // Note: getDeviceId() reads/writes ~/.kimi/device_id. That file is shared
 // with kimi-cli on purpose (AGENTS.md rule 2) and the function is
@@ -41,6 +41,12 @@ test("All header values are ASCII-only (undici rejects non-ASCII)", () => {
   }
 })
 
+test("asciiHeaderValue strips non-ASCII bytes like kimi-cli and falls back when empty", () => {
+  expect(asciiHeaderValue(" hoste ")).toBe("hoste")
+  expect(asciiHeaderValue("hést")).toBe("hst")
+  expect(asciiHeaderValue("你好")).toBe("unknown")
+})
+
 test("Device id is a 32-char lowercase hex string (kimi-cli UUIDv4 no-dashes format)", () => {
   expect(getDeviceId()).toMatch(/^[0-9a-f]{32}$/)
 })
@@ -61,20 +67,21 @@ test("Device id is also present and matches in the headers map", () => {
 
 // Regression guard: prior to v1.0.3 we were sending `X-Msh-Device-Model =
 // <arch>` and `X-Msh-Os-Version = <type release>`. That didn't match kimi-cli
-// (which uses `platform.system() + release() + machine()` for the model and
-// `platform.version()` — the kernel build string — for the os version) and
-// caused Moonshot to 403 every request from this plugin with
-// "access_terminated_error". Keep these shape-asserts strict so a future
-// "cleanup" of headers.ts can't silently regress the fingerprint.
-test("X-Msh-Device-Model matches kimi-cli _device_model() shape (system release machine)", () => {
+// and caused Moonshot to 403 every request from this plugin with
+// "access_terminated_error". Keep this tied to the helper so Linux, macOS,
+// and Windows all stay on the same parity path.
+test("X-Msh-Device-Model matches the kimi-cli parity helper", () => {
   const h = kimiHeaders()
-  const sys = os.type()
-  const rel = os.release()
-  const mach = os.machine?.() || os.arch()
-  expect(h["X-Msh-Device-Model"]).toBe(`${sys} ${rel} ${mach}`)
-  // Must contain whitespace-separated release and machine — i.e. more than a
-  // bare arch string.
-  expect(h["X-Msh-Device-Model"]).toContain(" ")
+  expect(h["X-Msh-Device-Model"]).toBe(asciiHeaderValue(kimiDeviceModel()))
+})
+
+test("kimiDeviceModel mirrors kimi-cli Darwin and Windows special cases", () => {
+  expect(kimiDeviceModel({ system: "Darwin", release: "23.6.0", machine: "arm64", macVersion: "15.4.1" })).toBe(
+    "macOS 15.4.1 arm64",
+  )
+  expect(kimiDeviceModel({ system: "Windows_NT", release: "10.0.26100", machine: "x64" })).toBe("Windows 11 x64")
+  expect(kimiDeviceModel({ system: "Windows_NT", release: "10.0.19045", machine: "x64" })).toBe("Windows 10 x64")
+  expect(kimiDeviceModel({ system: "Linux", release: "6.8.0", machine: "x86_64" })).toBe("Linux 6.8.0 x86_64")
 })
 
 test("X-Msh-Os-Version matches os.version() (kernel build string on Linux)", () => {

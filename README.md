@@ -99,7 +99,7 @@ Two identifiers are load-bearing:
 opencode auth login -p kimi-for-coding-oauth
 ```
 
-The plugin returns a verification URL and user code. After browser approval it polls the device-auth endpoint, queries `/coding/v1/models` to discover the current model id and context length for your account, prints a config snippet with that context length filled in, and stores the token plus discovered model metadata in opencode's auth store. Model discovery runs again on every token refresh. Access tokens refresh automatically, and the loader retries once after a `401`.
+The plugin returns a verification URL and user code. After browser approval it polls the device-auth endpoint, queries `/coding/v1/models` to discover the current model id and context length for your account, prints a config snippet with that context length filled in, and stores the token in opencode's auth store. Model discovery runs again on every token refresh, and a fresh loader instance will re-query `/coding/v1/models` on first use if it needs the current wire model id. Access tokens refresh automatically, and the loader retries once after a `401`.
 
 ### Use
 

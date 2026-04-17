@@ -163,15 +163,23 @@ test("auth.loader: apiKey sentinel is returned (opencode requires truthy)", asyn
 })
 
 test("auth.loader: owns Authorization and strips any caller-supplied value (rule 3)", async () => {
-  mock = installFetchMock(() => ({ body: { ok: true } }))
+  mock = installFetchMock((call) => {
+    if (call.url.endsWith("/coding/v1/models")) {
+      return { body: { data: [{ id: MODEL_ID, context_length: 262144 }] } }
+    }
+    return { body: { ok: true } }
+  })
   const { fetch: f } = await getLoaderFetch(async () => validAuth({ access: jwt() }))
   await f("https://api.kimi.com/coding/v1/chat", {
     method: "POST",
     headers: { Authorization: "Bearer SHOULD-BE-OVERRIDDEN", authorization: "lower-also" },
     body: JSON.stringify({}),
   })
-  expect(mock.calls).toHaveLength(1)
-  const h = mock.calls[0]!.headers
+  expect(mock.calls.map((c) => c.url)).toEqual([
+    "https://api.kimi.com/coding/v1/models",
+    "https://api.kimi.com/coding/v1/chat",
+  ])
+  const h = mock.calls[1]!.headers
   expect(h["authorization"]).toBe(`Bearer ${jwt()}`)
   // Seven kimi-cli fingerprint headers are attached on every request.
   expect(h["x-msh-platform"]).toBe("kimi_cli")
@@ -210,8 +218,10 @@ test("auth.loader: refreshes when expiry is within safety window", async () => {
   expect(writes[0]!.id).toBe(PROVIDER_ID)
   const persisted = writes[0]!.body as { access: string; model_id?: string; context_length?: number }
   expect(persisted.access).toBe("access-2")
-  expect(persisted.model_id).toBe("kimi-for-coding")
-  expect(persisted.context_length).toBe(262144)
+  // opencode's SDK auth schema persists only the standard oauth fields; model
+  // discovery is cached in-memory by the loader.
+  expect(persisted.model_id).toBeUndefined()
+  expect(persisted.context_length).toBeUndefined()
   expect(reads).toBeGreaterThan(0)
 })
 
@@ -238,8 +248,8 @@ test("auth.loader: prefers the canonical MODEL_ID slug when /models returns mult
   const { writes, fetch: f } = await getLoaderFetch(async () => current)
   await f("https://api.kimi.com/coding/v1/chat")
   const persisted = writes[0]!.body as { model_id?: string; context_length?: number }
-  expect(persisted.model_id).toBe(MODEL_ID)
-  expect(persisted.context_length).toBe(262144)
+  expect(persisted.model_id).toBeUndefined()
+  expect(persisted.context_length).toBeUndefined()
 })
 
 test("auth.loader: model discovery failure does not break refresh (graceful)", async () => {
@@ -257,6 +267,48 @@ test("auth.loader: model discovery failure does not break refresh (graceful)", a
   // Persisted despite /models failing; just no model_id.
   expect((writes[0]!.body as { access: string }).access).toBe("new")
   expect((writes[0]!.body as { model_id?: string }).model_id).toBeUndefined()
+})
+
+test("auth.loader: discovers /models on first request when auth storage only has bare oauth fields", async () => {
+  mock = installFetchMock((call) => {
+    if (call.url.endsWith("/coding/v1/models")) {
+      return { body: { data: [{ id: "k2p5", display_name: "Kimi Code", context_length: 131072 }] } }
+    }
+    return { body: { ok: true } }
+  })
+  const { fetch: f } = await getLoaderFetch(async () => validAuth())
+  await f("https://api.kimi.com/coding/v1/chat/completions", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model: MODEL_ID, messages: [] }),
+  })
+  expect(mock.calls.map((c) => c.url)).toEqual([
+    "https://api.kimi.com/coding/v1/models",
+    "https://api.kimi.com/coding/v1/chat/completions",
+  ])
+  const sentBody = JSON.parse(mock.calls[1]!.body as string)
+  expect(sentBody.model).toBe("k2p5")
+})
+
+test("auth.loader: caches discovered model info for subsequent requests in the same loader", async () => {
+  mock = installFetchMock((call) => {
+    if (call.url.endsWith("/coding/v1/models")) {
+      return { body: { data: [{ id: "k2p5", display_name: "Kimi Code", context_length: 131072 }] } }
+    }
+    return { body: { ok: true } }
+  })
+  const { fetch: f } = await getLoaderFetch(async () => validAuth())
+  await f("https://api.kimi.com/coding/v1/chat/completions", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model: MODEL_ID, turn: 1 }),
+  })
+  await f("https://api.kimi.com/coding/v1/chat/completions", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model: MODEL_ID, turn: 2 }),
+  })
+  expect(mock.calls.filter((c) => c.url.endsWith("/coding/v1/models"))).toHaveLength(1)
 })
 
 test("auth.loader: rewrites wire `model` to the discovered server id (Option A)", async () => {
@@ -292,6 +344,30 @@ test("auth.loader: leaves body untouched when discovered id equals MODEL_ID (K2.
   expect(mock.calls[0]!.body).toBe(originalBody)
 })
 
+test("auth.loader: preserves Request input headers while still rewriting Authorization and model", async () => {
+  mock = installFetchMock(() => ({ body: { ok: true } }))
+  const { fetch: f } = await getLoaderFetch(
+    async () =>
+      ({
+        ...validAuth(),
+        model_id: "k2p5",
+      }) as unknown as ReturnType<typeof validAuth>,
+  )
+  const req = new Request("https://api.kimi.com/coding/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-extra": "keep-me",
+      Authorization: "Bearer stale",
+    },
+    body: JSON.stringify({ model: MODEL_ID, messages: [] }),
+  })
+  await f(req)
+  expect(mock.calls[0]!.headers["x-extra"]).toBe("keep-me")
+  expect(mock.calls[0]!.headers["authorization"]).toBe("Bearer access-1")
+  expect(JSON.parse(mock.calls[0]!.body as string).model).toBe("k2p5")
+})
+
 test("auth.loader: 401 triggers exactly one forced refresh + retry (no infinite loop)", async () => {
   let current = validAuth({ access: "stale" })
   const readAuth = async () => current
@@ -311,15 +387,17 @@ test("auth.loader: 401 triggers exactly one forced refresh + retry (no infinite 
   const res = await f("https://api.kimi.com/coding/v1/chat")
   expect(res.status).toBe(401)
   const urls = mock.calls.map((c) => c.url)
-  // Expected order: stale call → refresh → /models discovery → retry with fresh token → STOP.
+  // Expected order: startup discovery with stale token → stale call → refresh
+  // → /models discovery with fresh token → retry with fresh token → STOP.
   expect(urls).toEqual([
+    "https://api.kimi.com/coding/v1/models",
     "https://api.kimi.com/coding/v1/chat",
     "https://auth.kimi.com/api/oauth/token",
     "https://api.kimi.com/coding/v1/models",
     "https://api.kimi.com/coding/v1/chat",
   ])
-  expect(mock.calls[0]!.headers["authorization"]).toBe("Bearer stale")
-  expect(mock.calls[3]!.headers["authorization"]).toBe("Bearer fresh")
+  expect(mock.calls[1]!.headers["authorization"]).toBe("Bearer stale")
+  expect(mock.calls[4]!.headers["authorization"]).toBe("Bearer fresh")
 })
 
 // ---------- auth.methods (device flow wiring) -------------------------------
@@ -353,9 +431,6 @@ test("auth.methods[0].authorize returns URL + instructions + async callback", as
   expect(cb.access).toBe("A")
   expect(cb.refresh).toBe("R")
   expect(typeof cb.expires).toBe("number")
-  // Discovered fields are persisted alongside the token (Option A+B).
-  expect(cb.model_id).toBe("kimi-for-coding")
-  expect(cb.context_length).toBe(262144)
 })
 
 test("auth callback prints a config snippet with top-level model variants", async () => {
@@ -411,6 +486,7 @@ test("auth callback prints a config snippet with top-level model variants", asyn
   }
   const model = parsed.provider[PROVIDER_ID]!.models[MODEL_ID]!
   expect(model.limit?.context).toBe(262144)
+  expect(model.options).toEqual({})
   expect(model.variants?.off).toEqual({ reasoning_effort: "off" })
   expect(model.variants?.auto).toEqual({ reasoning_effort: "auto" })
   expect(model.options?.variants).toBeUndefined()
