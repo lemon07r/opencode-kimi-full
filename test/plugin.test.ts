@@ -357,3 +357,61 @@ test("auth.methods[0].authorize returns URL + instructions + async callback", as
   expect(cb.model_id).toBe("kimi-for-coding")
   expect(cb.context_length).toBe(262144)
 })
+
+test("auth callback prints a config snippet with top-level model variants", async () => {
+  mock = installFetchMock((call) => {
+    if (call.url.includes("device_authorization")) {
+      return {
+        body: {
+          device_code: "dc",
+          user_code: "WXYZ-1234",
+          verification_uri: "https://auth.kimi.com/device",
+          verification_uri_complete: "https://auth.kimi.com/device?u=WXYZ-1234",
+          expires_in: 60,
+          interval: 1,
+        },
+      }
+    }
+    if (call.url.endsWith("/coding/v1/models")) {
+      return { body: { data: [{ id: "kimi-for-coding", display_name: "Kimi Code", context_length: 262144 }] } }
+    }
+    return { body: { access_token: "A", refresh_token: "R", token_type: "Bearer", expires_in: 900 } }
+  })
+  const { hooks } = await getHooks()
+  const method = hooks.auth!.methods![0] as { authorize: () => Promise<any> }
+  const r = await method.authorize()
+  const lines: string[] = []
+  const orig = console.log
+  console.log = (...args: unknown[]) => {
+    lines.push(args.map(String).join(" "))
+  }
+  try {
+    await r.callback()
+  } finally {
+    console.log = orig
+  }
+
+  const text = lines.join("\n")
+  const start = text.indexOf("{")
+  const end = text.lastIndexOf("}")
+  expect(start).toBeGreaterThanOrEqual(0)
+  expect(end).toBeGreaterThan(start)
+  const parsed = JSON.parse(text.slice(start, end + 1)) as {
+    provider: {
+      [key: string]: {
+        models: {
+          [key: string]: {
+            limit?: { context?: number }
+            options?: Record<string, unknown>
+            variants?: Record<string, { reasoning_effort?: string }>
+          }
+        }
+      }
+    }
+  }
+  const model = parsed.provider[PROVIDER_ID]!.models[MODEL_ID]!
+  expect(model.limit?.context).toBe(262144)
+  expect(model.variants?.off).toEqual({ reasoning_effort: "off" })
+  expect(model.variants?.auto).toEqual({})
+  expect(model.options?.variants).toBeUndefined()
+})
