@@ -47,8 +47,7 @@ Add the plugin and a provider entry to `opencode.json` (or `~/.config/opencode/o
       },
       "models": {
         "kimi-for-coding": {
-          "name": "Kimi K2.6 Code Preview",
-          "limit": { "context": 262144, "output": 32768 },
+          "name": "Kimi For Coding",
           "reasoning": true,
           "options": {},
           "variants": {
@@ -68,7 +67,7 @@ Add the plugin and a provider entry to `opencode.json` (or `~/.config/opencode/o
 Two identifiers are load-bearing:
 
 - **provider id** `kimi-for-coding-oauth` — the plugin's `auth` and `chat.params` hooks match on it.
-- **model id** `kimi-for-coding` — sent to Moonshot verbatim; do not strip the `kimi-` prefix.
+- **model id** `kimi-for-coding` — a stable opencode-side alias. The plugin rewrites the wire `model` field to whatever `/coding/v1/models` reports for your account (e.g. `kimi-for-coding` on K2.6 tiers, `k2p5` on K2.5 tiers). Both tiers use identical config.
 
 > **Note.** The provider id is intentionally not `kimi-for-coding`. That id is already published by [models.dev](https://models.dev) and points at a static-API-key flow that routes to K2.5. Using a distinct id keeps the two paths from colliding under a single `opencode auth login` entry.
 
@@ -78,7 +77,7 @@ Two identifiers are load-bearing:
 opencode auth login -p kimi-for-coding-oauth
 ```
 
-The plugin returns a verification URL and user code. After browser approval it polls the device-auth endpoint and persists tokens through opencode's `auth.json`. Access tokens have a ~15 minute TTL and refresh automatically; refresh tokens last ~30 days.
+The plugin returns a verification URL and user code. After browser approval it polls the device-auth endpoint, queries `/coding/v1/models` to discover the model id and context length your account is entitled to, prints a ready-to-paste config block with those values filled in, and persists everything (tokens + discovered metadata) through opencode's `auth.json`. The model list is re-checked on every token refresh, mirroring kimi-cli's `refresh_managed_models`. Access tokens have a ~15 minute TTL and refresh automatically; refresh tokens last ~30 days.
 
 ### Use
 

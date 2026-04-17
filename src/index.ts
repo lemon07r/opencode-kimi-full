@@ -1,7 +1,7 @@
 import type { Plugin } from "@opencode-ai/plugin"
 import { MODEL_ID, PROVIDER_ID, REFRESH_SAFETY_WINDOW_MS } from "./constants.ts"
 import { kimiHeaders } from "./headers.ts"
-import { pollDeviceToken, refreshToken, startDeviceAuth } from "./oauth.ts"
+import { listModels, pollDeviceToken, refreshToken, startDeviceAuth } from "./oauth.ts"
 
 // IMPORTANT: this module must have exactly ONE export — the default plugin
 // function. opencode's plugin loader (packages/opencode/src/plugin/index.ts →
@@ -14,6 +14,55 @@ type OAuthAuth = {
   refresh: string
   access: string
   expires: number
+  // Discovered from `GET /coding/v1/models` at login and on every refresh.
+  // Mirrors kimi-cli's `refresh_managed_models`. Absent on auth records
+  // created before v1.1.0; fallback to MODEL_ID and no context-length hint.
+  //
+  // `model_id` is the slug Moonshot actually expects on the wire for this
+  // account — K2.5 tiers can see `k2p5`, K2.6 tiers see `kimi-for-coding`.
+  // `context_length` is surfaced to users in the post-login config block
+  // so their opencode config matches their real entitlement.
+  model_id?: string
+  context_length?: number
+  model_display?: string
+}
+
+function buildConfigBlock(info: { model_id: string; context_length?: number; display?: string }) {
+  const name = info.display ?? "Kimi For Coding"
+  const ctx = info.context_length ?? 0
+  // The opencode-side model key is always MODEL_ID ("kimi-for-coding"); the
+  // plugin rewrites the wire `model` body field to `info.model_id` inside
+  // `loader.fetch`. This way both K2.5 and K2.6 users paste identical
+  // config — only the wire request differs.
+  return JSON.stringify(
+    {
+      provider: {
+        [PROVIDER_ID]: {
+          npm: "@ai-sdk/openai-compatible",
+          name: "Kimi For Coding (OAuth)",
+          options: { baseURL: "https://api.kimi.com/coding/v1" },
+          models: {
+            [MODEL_ID]: {
+              name,
+              reasoning: true,
+              ...(ctx > 0 ? { limit: { context: ctx } } : {}),
+              options: {
+                variants: {
+                  auto: {},
+                  off: { reasoning_effort: "off" },
+                  low: { reasoning_effort: "low" },
+                  medium: { reasoning_effort: "medium" },
+                  high: { reasoning_effort: "high" },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    null,
+    2,
+  )
 }
 
 /**
@@ -68,11 +117,36 @@ const plugin: Plugin = async ({ client }) => {
             )
           if (!force && !isExpiring(current)) return current
           const tokens = await refreshToken(current.refresh)
+          // kimi-cli re-runs `refresh_managed_models` on every successful
+          // refresh — we mirror that so entitlement changes (e.g. an
+          // account gaining/losing K2.6 access) are picked up without a
+          // full re-login. Failures here must not block the refresh: a
+          // stale cached model_id still works for the common case, and
+          // the request-path 401 retry will flush a broken access token.
+          let discovered: Pick<OAuthAuth, "model_id" | "context_length" | "model_display"> = {
+            model_id: current.model_id,
+            context_length: current.context_length,
+            model_display: current.model_display,
+          }
+          try {
+            const models = await listModels(tokens.access_token)
+            const picked = models[0]
+            if (picked) {
+              discovered = {
+                model_id: picked.id,
+                context_length: picked.context_length,
+                model_display: picked.display_name,
+              }
+            }
+          } catch {
+            /* keep previous discovery */
+          }
           const next: OAuthAuth = {
             type: "oauth",
             refresh: tokens.refresh_token,
             access: tokens.access_token,
             expires: Date.now() + tokens.expires_in * 1000,
+            ...discovered,
           }
           await persistAuth(next)
           return next
@@ -90,7 +164,36 @@ const plugin: Plugin = async ({ client }) => {
               headers.delete("Authorization")
               for (const [k, v] of Object.entries(kimiHeaders())) headers.set(k, v)
               headers.set("Authorization", `Bearer ${auth.access}`)
-              return fetch(input, { ...init, headers })
+
+              // Rewrite the wire `model` to the server-discovered id.
+              // opencode bakes the model id into the LanguageModel instance
+              // at provider-init time (via `provider.chatModel(modelId)`),
+              // so `chat.params` cannot change it. We rewrite the JSON
+              // body here instead. Only touches requests where:
+              //   - we have a discovered id that differs from what opencode
+              //     sent (otherwise leave the body untouched),
+              //   - the body is JSON with a string `model` field equal to
+              //     our opencode-side placeholder MODEL_ID.
+              // This way `input.model.id` stays `kimi-for-coding` in
+              // opencode's UI/config, while Moonshot sees whatever its
+              // /models endpoint says for this account (e.g. `k2p5` on
+              // K2.5 tiers). Mirrors kimi-cli's behavior — it always sends
+              // exactly the id it got back from `/models`.
+              let newInit = init
+              const targetModel = auth.model_id
+              if (targetModel && targetModel !== MODEL_ID && init?.body && typeof init.body === "string") {
+                try {
+                  const parsed = JSON.parse(init.body)
+                  if (parsed && typeof parsed === "object" && parsed.model === MODEL_ID) {
+                    parsed.model = targetModel
+                    newInit = { ...init, body: JSON.stringify(parsed) }
+                  }
+                } catch {
+                  /* non-JSON body, e.g. multipart — leave alone */
+                }
+              }
+
+              return fetch(input, { ...newInit, headers })
             }
 
             let auth = await ensureFresh()
@@ -120,11 +223,43 @@ const plugin: Plugin = async ({ client }) => {
               callback: async () => {
                 try {
                   const tokens = await pollDeviceToken(device)
+                  // Discover the account's real model entitlement right
+                  // after approval (mirrors kimi-cli's login flow).
+                  // Failures here degrade gracefully — the plugin still
+                  // works; users just don't see the config-block hint and
+                  // the next token refresh will re-attempt discovery.
+                  let discovered: Pick<OAuthAuth, "model_id" | "context_length" | "model_display"> = {}
+                  try {
+                    const models = await listModels(tokens.access_token)
+                    const picked = models[0]
+                    if (picked) {
+                      discovered = {
+                        model_id: picked.id,
+                        context_length: picked.context_length,
+                        model_display: picked.display_name,
+                      }
+                      // Print a ready-to-paste config block. opencode shows
+                      // this next to the "Authorized" message.
+                      const block = buildConfigBlock({
+                        model_id: picked.id,
+                        context_length: picked.context_length,
+                        display: picked.display_name,
+                      })
+                      console.log(
+                        `\n✓ Kimi for Coding: authorized (model: ${picked.id}${
+                          picked.context_length ? `, context ${picked.context_length}` : ""
+                        })\n\nAdd this to your opencode config (~/.config/opencode/opencode.json) if you haven't already:\n\n${block}\n`,
+                      )
+                    }
+                  } catch {
+                    /* non-fatal */
+                  }
                   return {
                     type: "success",
                     refresh: tokens.refresh_token,
                     access: tokens.access_token,
                     expires: Date.now() + tokens.expires_in * 1000,
+                    ...discovered,
                   }
                 } catch {
                   return { type: "failed" }

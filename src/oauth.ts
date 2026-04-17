@@ -1,4 +1,5 @@
 import {
+  API_BASE_URL,
   OAUTH_CLIENT_ID,
   OAUTH_DEVICE_AUTH_URL,
   OAUTH_DEVICE_GRANT,
@@ -99,4 +100,51 @@ export async function refreshToken(refresh: string): Promise<TokenResponse> {
     refresh_token: refresh,
     grant_type: OAUTH_REFRESH_GRANT,
   })
+}
+
+/**
+ * Shape of each entry in `GET /coding/v1/models`. Field set mirrors what
+ * kimi-cli reads — see research/kimi-cli/src/kimi_cli/auth/platforms.py
+ * `_list_models`. Unused-by-this-plugin flags are kept optional for
+ * documentation; the wire response carries them either way.
+ */
+export type KimiModelInfo = {
+  id: string
+  display_name?: string
+  context_length?: number
+  supports_reasoning?: boolean
+  supports_image_in?: boolean
+  supports_video_in?: boolean
+}
+
+/**
+ * Calls `GET {API_BASE_URL}/models` with the user's JWT and returns the
+ * server's authoritative model list for this account. Different account
+ * tiers see different slugs (K2.5 accounts may see `k2p5`, K2.6 accounts
+ * see `kimi-for-coding`); the `id` and `context_length` here are the only
+ * truth about what the user is actually entitled to.
+ *
+ * kimi-cli calls this on login and on every successful token refresh
+ * (see `refresh_managed_models` in platforms.py). We do the same.
+ */
+export async function listModels(accessToken: string): Promise<KimiModelInfo[]> {
+  const res = await fetch(`${API_BASE_URL}/models`, {
+    headers: {
+      ...kimiHeaders(),
+      Authorization: `Bearer ${accessToken}`,
+      Accept: "application/json",
+    },
+  })
+  const text = await res.text()
+  if (!res.ok) {
+    throw new Error(`kimi list-models ${res.status}: ${text.slice(0, 200)}`)
+  }
+  let json: any
+  try {
+    json = JSON.parse(text)
+  } catch {
+    throw new Error(`kimi list-models: non-JSON response: ${text.slice(0, 200)}`)
+  }
+  const data = Array.isArray(json?.data) ? json.data : []
+  return data.filter((m: any) => typeof m?.id === "string") as KimiModelInfo[]
 }

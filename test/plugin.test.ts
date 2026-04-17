@@ -187,26 +187,82 @@ test("auth.loader: refreshes when expiry is within safety window", async () => {
     reads++
     return current
   }
-  // First fetch call → token refresh, second → the actual request.
+  // Expected order: token refresh → /models discovery → actual request.
   mock = installFetchMock((call) => {
     if (call.url.includes("/oauth/token")) {
       return { body: { access_token: "access-2", refresh_token: "refresh-2", token_type: "Bearer", expires_in: 900 } }
+    }
+    if (call.url.endsWith("/coding/v1/models")) {
+      return { body: { data: [{ id: "kimi-for-coding", display_name: "Kimi Code", context_length: 262144 }] } }
     }
     return { body: { ok: true } }
   })
   const { fetch: f, writes } = await getLoaderFetch(readAuth)
   await f("https://api.kimi.com/coding/v1/chat")
-  // One refresh call + one API call.
   expect(mock.calls.map((c) => c.url)).toEqual([
     "https://auth.kimi.com/api/oauth/token",
+    "https://api.kimi.com/coding/v1/models",
     "https://api.kimi.com/coding/v1/chat",
   ])
-  expect(mock.calls[1]!.headers["authorization"]).toBe("Bearer access-2")
-  // Persisted the refreshed token back to opencode's auth store.
+  expect(mock.calls[2]!.headers["authorization"]).toBe("Bearer access-2")
+  // Persisted the refreshed token + discovered model metadata.
   expect(writes).toHaveLength(1)
   expect(writes[0]!.id).toBe(PROVIDER_ID)
-  expect((writes[0]!.body as { access: string }).access).toBe("access-2")
+  const persisted = writes[0]!.body as { access: string; model_id?: string; context_length?: number }
+  expect(persisted.access).toBe("access-2")
+  expect(persisted.model_id).toBe("kimi-for-coding")
+  expect(persisted.context_length).toBe(262144)
   expect(reads).toBeGreaterThan(0)
+})
+
+test("auth.loader: model discovery failure does not break refresh (graceful)", async () => {
+  const current = validAuth({ expires: Date.now() + REFRESH_SAFETY_WINDOW_MS / 2, access: "old" })
+  mock = installFetchMock((call) => {
+    if (call.url.includes("/oauth/token")) {
+      return { body: { access_token: "new", refresh_token: "r", token_type: "Bearer", expires_in: 900 } }
+    }
+    if (call.url.endsWith("/coding/v1/models")) return { status: 500, body: { error: "oops" } }
+    return { body: { ok: true } }
+  })
+  const { fetch: f, writes } = await getLoaderFetch(async () => current)
+  const res = await f("https://api.kimi.com/coding/v1/chat")
+  expect(res.ok).toBe(true)
+  // Persisted despite /models failing; just no model_id.
+  expect((writes[0]!.body as { access: string }).access).toBe("new")
+  expect((writes[0]!.body as { model_id?: string }).model_id).toBeUndefined()
+})
+
+test("auth.loader: rewrites wire `model` to the discovered server id (Option A)", async () => {
+  // Persisted auth already carries a discovered model_id different from the
+  // opencode-side MODEL_ID placeholder — this is the K2.5 account case.
+  const current = {
+    ...validAuth(),
+    model_id: "k2p5",
+  } as unknown as ReturnType<typeof validAuth>
+  mock = installFetchMock(() => ({ body: { ok: true } }))
+  const { fetch: f } = await getLoaderFetch(async () => current)
+  await f("https://api.kimi.com/coding/v1/chat/completions", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model: MODEL_ID, messages: [] }),
+  })
+  expect(mock.calls).toHaveLength(1)
+  const sentBody = JSON.parse(mock.calls[0]!.body as string)
+  expect(sentBody.model).toBe("k2p5")
+  expect(sentBody.messages).toEqual([])
+})
+
+test("auth.loader: leaves body untouched when discovered id equals MODEL_ID (K2.6 case)", async () => {
+  const current = { ...validAuth(), model_id: MODEL_ID } as unknown as ReturnType<typeof validAuth>
+  mock = installFetchMock(() => ({ body: { ok: true } }))
+  const { fetch: f } = await getLoaderFetch(async () => current)
+  const originalBody = JSON.stringify({ model: MODEL_ID, x: 1 })
+  await f("https://api.kimi.com/coding/v1/chat/completions", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: originalBody,
+  })
+  expect(mock.calls[0]!.body).toBe(originalBody)
 })
 
 test("auth.loader: 401 triggers exactly one forced refresh + retry (no infinite loop)", async () => {
@@ -217,6 +273,9 @@ test("auth.loader: 401 triggers exactly one forced refresh + retry (no infinite 
       current = { ...current, access: "fresh" }
       return { body: { access_token: "fresh", refresh_token: "refresh-2", token_type: "Bearer", expires_in: 900 } }
     }
+    if (call.url.endsWith("/coding/v1/models")) {
+      return { body: { data: [{ id: "kimi-for-coding", context_length: 262144 }] } }
+    }
     // First API call: stale → 401. Every subsequent API call: 401 as well.
     // The loader must NOT loop; exactly one retry after refresh.
     return { status: 401, body: { error: "unauthorized" } }
@@ -225,14 +284,15 @@ test("auth.loader: 401 triggers exactly one forced refresh + retry (no infinite 
   const res = await f("https://api.kimi.com/coding/v1/chat")
   expect(res.status).toBe(401)
   const urls = mock.calls.map((c) => c.url)
-  // Expected order: stale call → refresh → retry with fresh token → STOP.
+  // Expected order: stale call → refresh → /models discovery → retry with fresh token → STOP.
   expect(urls).toEqual([
     "https://api.kimi.com/coding/v1/chat",
     "https://auth.kimi.com/api/oauth/token",
+    "https://api.kimi.com/coding/v1/models",
     "https://api.kimi.com/coding/v1/chat",
   ])
   expect(mock.calls[0]!.headers["authorization"]).toBe("Bearer stale")
-  expect(mock.calls[2]!.headers["authorization"]).toBe("Bearer fresh")
+  expect(mock.calls[3]!.headers["authorization"]).toBe("Bearer fresh")
 })
 
 // ---------- auth.methods (device flow wiring) -------------------------------
@@ -251,6 +311,9 @@ test("auth.methods[0].authorize returns URL + instructions + async callback", as
         },
       }
     }
+    if (call.url.endsWith("/coding/v1/models")) {
+      return { body: { data: [{ id: "kimi-for-coding", display_name: "Kimi Code", context_length: 262144 }] } }
+    }
     return { body: { access_token: "A", refresh_token: "R", token_type: "Bearer", expires_in: 900 } }
   })
   const { hooks } = await getHooks()
@@ -263,4 +326,7 @@ test("auth.methods[0].authorize returns URL + instructions + async callback", as
   expect(cb.access).toBe("A")
   expect(cb.refresh).toBe("R")
   expect(typeof cb.expires).toBe("number")
+  // Discovered fields are persisted alongside the token (Option A+B).
+  expect(cb.model_id).toBe("kimi-for-coding")
+  expect(cb.context_length).toBe(262144)
 })
