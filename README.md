@@ -10,7 +10,7 @@ This plugin:
 - reuses `~/.kimi/device_id` for `X-Msh-Device-Id`
 - adds `prompt_cache_key`, `thinking`, and `reasoning_effort` for `kimi-for-coding` requests
 
-It does not accept static `sk-kimi-...` API keys. This plugin is the OAuth/device-flow path only.
+This is the K2.6 / `kimi-for-coding` OAuth path: Moonshot routes static `sk-kimi-...` API keys to K2.5, and OAuth tokens with `scope: kimi-code` to K2.6.
 
 Contributor and agent documentation lives in [`AGENTS.md`](./AGENTS.md).
 
@@ -23,17 +23,13 @@ Contributor and agent documentation lives in [`AGENTS.md`](./AGENTS.md).
 
 ### Install
 
-Preferred:
-
 ```sh
 opencode plugin opencode-kimi-full --global
 ```
 
-That installs the plugin through opencode and adds it to your global config. You do not need to `cd ~/.opencode`, and `bun add opencode-kimi-full` in an arbitrary directory does not make opencode load the plugin.
+That installs the plugin through opencode and adds it to your global config.
 
-If you prefer to edit config manually, add the package name to the `plugin` list in `~/.config/opencode/opencode.json` or a project-local `.opencode/opencode.json`:
-
-No separate `bun add` step is required for this path. opencode resolves bare npm plugin names itself.
+Or add the package name to the `plugin` list in `~/.config/opencode/opencode.json` or a project-local `.opencode/opencode.json`:
 
 ```json
 {
@@ -53,8 +49,6 @@ Point the `plugin` entry at the repo root instead of the npm package name:
   "plugin": ["/absolute/path/to/opencode-kimi-full"]
 }
 ```
-
-`~/.opencode` is not required for this. opencode reads global config from `~/.config/opencode` and also reads `.opencode/` directories when they exist.
 
 </details>
 
