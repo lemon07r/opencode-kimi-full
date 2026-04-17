@@ -2,7 +2,7 @@
 
 An [opencode](https://opencode.ai) plugin for the **Kimi For Coding** plan.
 
-It authenticates the same way the official [kimi-cli](https://github.com/MoonshotAI/kimi-cli) does and mirrors its wire shape, so opencode's requests to Moonshot's `/coding` endpoint match kimi-cli byte-for-byte, including OAuth, fingerprint headers, session-scoped prompt caching, and paired thinking / reasoning-effort fields.
+This plugin authenticates the same way the official [kimi-cli](https://github.com/MoonshotAI/kimi-cli) does and mirrors its wire shape, so opencode's requests to Moonshot's `/coding` endpoint match kimi-cli byte-for-byte, including OAuth, fingerprint headers, session-scoped prompt caching, and paired thinking / reasoning-effort fields for higher fidelity. This Kimi specific extras used by kimi-cli are not implemented in opencode. Bonus side effect; users with access to Kimi K2.6 Code Preview will get access to it in opencode with this plugin.
 
 Contributor and agent documentation lives in [`AGENTS.md`](./AGENTS.md).
 
