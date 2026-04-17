@@ -215,6 +215,33 @@ test("auth.loader: refreshes when expiry is within safety window", async () => {
   expect(reads).toBeGreaterThan(0)
 })
 
+test("auth.loader: prefers the canonical MODEL_ID slug when /models returns multiple", async () => {
+  // Server returns several entries; the canonical `kimi-for-coding` is not first.
+  // Selection must still prefer it over the first element.
+  const current = validAuth({ expires: Date.now() + REFRESH_SAFETY_WINDOW_MS / 2 })
+  mock = installFetchMock((call) => {
+    if (call.url.includes("/oauth/token")) {
+      return { body: { access_token: "a", refresh_token: "r", token_type: "Bearer", expires_in: 900 } }
+    }
+    if (call.url.endsWith("/coding/v1/models")) {
+      return {
+        body: {
+          data: [
+            { id: "some-other-slug", context_length: 100000 },
+            { id: MODEL_ID, context_length: 262144, display_name: "Kimi" },
+          ],
+        },
+      }
+    }
+    return { body: { ok: true } }
+  })
+  const { writes, fetch: f } = await getLoaderFetch(async () => current)
+  await f("https://api.kimi.com/coding/v1/chat")
+  const persisted = writes[0]!.body as { model_id?: string; context_length?: number }
+  expect(persisted.model_id).toBe(MODEL_ID)
+  expect(persisted.context_length).toBe(262144)
+})
+
 test("auth.loader: model discovery failure does not break refresh (graceful)", async () => {
   const current = validAuth({ expires: Date.now() + REFRESH_SAFETY_WINDOW_MS / 2, access: "old" })
   mock = installFetchMock((call) => {

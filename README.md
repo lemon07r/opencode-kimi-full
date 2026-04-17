@@ -2,7 +2,7 @@
 
 An [opencode](https://opencode.ai) plugin for the **Kimi For Coding** plan.
 
-This plugin authenticates the same way the official [kimi-cli](https://github.com/MoonshotAI/kimi-cli) does and mirrors its wire shape, so opencode's requests to Moonshot's `/coding` endpoint match kimi-cli byte-for-byte, including OAuth, fingerprint headers, session-scoped prompt caching, and paired thinking / reasoning-effort fields for higher fidelity. The Kimi specific extras exposed by the /coding endpoint used by kimi-cli are not implemented in opencode. Bonus side effect; users with access to Kimi K2.6 Code Preview will get access to it in opencode with this plugin.
+This plugin authenticates the same way the official [kimi-cli](https://github.com/MoonshotAI/kimi-cli) does and mirrors its wire shape, so opencode's requests to Moonshot's `/coding` endpoint match kimi-cli byte-for-byte, including OAuth, fingerprint headers, session-scoped prompt caching, and paired thinking / reasoning-effort fields for higher fidelity. The Kimi-specific extras exposed by the `/coding` endpoint used by kimi-cli are not otherwise implemented in opencode.
 
 Contributor and agent documentation lives in [`AGENTS.md`](./AGENTS.md).
 
@@ -67,9 +67,9 @@ Add the plugin and a provider entry to `opencode.json` (or `~/.config/opencode/o
 Two identifiers are load-bearing:
 
 - **provider id** `kimi-for-coding-oauth` — the plugin's `auth` and `chat.params` hooks match on it.
-- **model id** `kimi-for-coding` — a stable opencode-side alias. The plugin rewrites the wire `model` field to whatever `/coding/v1/models` reports for your account (e.g. `kimi-for-coding` on K2.6 tiers, `k2p5` on K2.5 tiers). Both tiers use identical config.
+- **model id** `kimi-for-coding` — a stable opencode-side alias. At login and on every token refresh the plugin queries `/coding/v1/models` and, if the server reports a different slug for your account, rewrites the wire `model` field accordingly. In practice every plan currently returns `kimi-for-coding`, so this is a safety net, not something you need to think about.
 
-> **Note.** The provider id is intentionally not `kimi-for-coding`. That id is already published by [models.dev](https://models.dev) and points at a static-API-key flow that routes to K2.5. Using a distinct id keeps the two paths from colliding under a single `opencode auth login` entry.
+> **Note.** The provider id is intentionally not `kimi-for-coding`. That id is already published by [models.dev](https://models.dev) and points at a static-API-key flow using a different SDK and auth shape. Using a distinct id keeps the two paths from colliding under a single `opencode auth login` entry.
 
 ### Log in
 
@@ -92,13 +92,13 @@ Press **Ctrl+T** to pick a reasoning variant (`off`, `auto`, `low`, `medium`, `h
 
 There are two ways to talk to Moonshot's Kimi For Coding plan today: the way kimi-cli does it, and the way opencode does it. They target different endpoints and use different authentication. This plugin brings kimi-cli parity into opencode.
 
-**How kimi-cli does it.** OAuth device-code flow against `auth.moonshot.cn` with `scope: kimi-code`, producing a short-lived JWT. Requests go to `https://api.kimi.com/coding/v1` (OpenAI-compatible) with the JWT as the bearer token, seven `X-Msh-*` fingerprint headers, a stable `~/.kimi/device_id`, and per-request extras: `prompt_cache_key` (an opt-in, session-scoped cache key) and paired `thinking.type` + `reasoning_effort`. The backend routes this token to K2.6.
+**How kimi-cli does it.** OAuth device-code flow against `auth.moonshot.cn` with `scope: kimi-code`, producing a short-lived JWT. Requests go to `https://api.kimi.com/coding/v1` (OpenAI-compatible) with the JWT as the bearer token, seven `X-Msh-*` fingerprint headers, a stable `~/.kimi/device_id`, and per-request extras: `prompt_cache_key` (an opt-in, session-scoped cache key) and paired `thinking.type` + `reasoning_effort`.
 
-**How opencode does it out of the box.** `opencode auth login` selects a Kimi For Coding provider from the catalog and prompts for a `KIMI_API_KEY` (a static `sk-kimi-...` key). The catalog entry uses `@ai-sdk/anthropic` against `api.kimi.com/coding`, which is valid since the endpoint exposes both OpenAI-compatible and Anthropic-compatible routes. No Kimi-specific request extras are sent. The backend currently routes a static `sk-kimi-...` key to K2.5.
+**How opencode does it out of the box.** `opencode auth login` selects a Kimi For Coding provider from the catalog and prompts for a `KIMI_API_KEY` (a static `sk-kimi-...` key). The catalog entry uses `@ai-sdk/anthropic` against `api.kimi.com/coding`, which is valid since the endpoint exposes both OpenAI-compatible and Anthropic-compatible routes. No Kimi-specific request extras are sent, and the auth token type differs from what kimi-cli uses.
 
 **What this plugin gives you.** Everything kimi-cli does, inside opencode:
 
-- OAuth device flow with `scope: kimi-code`, so you land on K2.6 (if you have access).
+- OAuth device flow with `scope: kimi-code`, routed to the Kimi For Coding endpoint the same way kimi-cli does.
 - `prompt_cache_key` set to opencode's session id, for session-scoped cache reuse.
 - Paired `thinking` + `reasoning_effort` fields.
 - The seven `X-Msh-*` headers and a kimi-cli-shaped `User-Agent`.
@@ -113,7 +113,7 @@ There are two ways to talk to Moonshot's Kimi For Coding plan today: the way kim
 
 Two upstream changes would narrow the gap, but neither would make this plugin redundant:
 
-- **If Moonshot routes `sk-kimi-...` keys to K2.6**, opencode's built-in path reaches K2.6 too, but still without `prompt_cache_key` or the paired reasoning fields. Explicit session-scoped cache reuse stays unavailable on that path (any automatic prefix caching Moonshot may do is orthogonal and would apply to both paths), and reasoning is controlled on the Anthropic route via `thinking.budget_tokens` — the paired `reasoning_effort: low|medium|high` knob that kimi-cli exposes has no equivalent there.
+- **If Moonshot's built-in opencode path gains parity on the routing side**, opencode's built-in entry still doesn't send `prompt_cache_key` or the paired reasoning fields. Explicit session-scoped cache reuse stays unavailable on that path (any automatic prefix caching Moonshot may do is orthogonal and would apply to both paths), and reasoning is controlled on the Anthropic route via `thinking.budget_tokens` — the paired `reasoning_effort: low|medium|high` knob that kimi-cli exposes has no equivalent there.
 - **If opencode ships a native Kimi For Coding OAuth**, the auth story converges, but the request-field gap stays until opencode's provider code emits these exact fields for `/coding`. kimi-cli is Moonshot's first-party client and targets the OpenAI-compatible route, so mirroring its wire shape is the lowest-risk way to stay aligned with upstream. Fingerprint parity (same `X-Msh-Device-Id` and headers, kimi-cli-shaped UA) and independent refresh-token chains are unlikely to be replicated by a first-party integration.
 
 </details>

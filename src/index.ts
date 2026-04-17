@@ -19,9 +19,10 @@ type OAuthAuth = {
   // created before v1.1.0; fallback to MODEL_ID and no context-length hint.
   //
   // `model_id` is the slug Moonshot actually expects on the wire for this
-  // account — K2.5 tiers can see `k2p5`, K2.6 tiers see `kimi-for-coding`.
-  // `context_length` is surfaced to users in the post-login config block
-  // so their opencode config matches their real entitlement.
+  // account. In practice every current tier returns `kimi-for-coding`, but
+  // the field exists so a future server-side slug change doesn't require a
+  // plugin update. `context_length` is surfaced to users in the post-login
+  // config block so their opencode config matches their real entitlement.
   model_id?: string
   context_length?: number
   model_display?: string
@@ -130,7 +131,12 @@ const plugin: Plugin = async ({ client }) => {
           }
           try {
             const models = await listModels(tokens.access_token)
-            const picked = models[0]
+            // Prefer the canonical `kimi-for-coding` id when the server
+            // offers it; otherwise take the first entry. Mirrors kimi-cli's
+            // behavior of treating `/models` as authoritative while keeping
+            // a stable slug when possible, so users see the same id across
+            // tiers in practice.
+            const picked = models.find((m) => m.id === MODEL_ID) ?? models[0]
             if (picked) {
               discovered = {
                 model_id: picked.id,
@@ -231,7 +237,11 @@ const plugin: Plugin = async ({ client }) => {
                   let discovered: Pick<OAuthAuth, "model_id" | "context_length" | "model_display"> = {}
                   try {
                     const models = await listModels(tokens.access_token)
-                    const picked = models[0]
+                    // Same preference as the loader: canonical id wins,
+                    // else first. In practice every tier currently returns
+                    // `kimi-for-coding`; the fallback exists only so a
+                    // future server change can't brick the plugin.
+                    const picked = models.find((m) => m.id === MODEL_ID) ?? models[0]
                     if (picked) {
                       discovered = {
                         model_id: picked.id,
@@ -246,7 +256,7 @@ const plugin: Plugin = async ({ client }) => {
                         display: picked.display_name,
                       })
                       console.log(
-                        `\n✓ Kimi for Coding: authorized (model: ${picked.id}${
+                        `\n✓ Authorized for Kimi For Coding (model: ${picked.id}${
                           picked.context_length ? `, context ${picked.context_length}` : ""
                         })\n\nAdd this to your opencode config (~/.config/opencode/opencode.json) if you haven't already:\n\n${block}\n`,
                       )
