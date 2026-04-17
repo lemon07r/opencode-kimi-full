@@ -48,8 +48,8 @@ function buildConfigBlock(info: { model_id: string; context_length?: number; dis
               ...(ctx > 0 ? { limit: { context: ctx } } : {}),
               options: {
                 variants: {
-                  auto: {},
                   off: { reasoning_effort: "off" },
+                  auto: {},
                   low: { reasoning_effort: "low" },
                   medium: { reasoning_effort: "medium" },
                   high: { reasoning_effort: "high" },

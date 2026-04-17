@@ -51,8 +51,8 @@ Add the plugin and a provider entry to `opencode.json` (or `~/.config/opencode/o
           "reasoning": true,
           "options": {},
           "variants": {
-            "auto":   { "reasoning_effort": "auto" },
             "off":    { "reasoning_effort": "off" },
+            "auto":   { "reasoning_effort": "auto" },
             "low":    { "reasoning_effort": "low" },
             "medium": { "reasoning_effort": "medium" },
             "high":   { "reasoning_effort": "high" }
@@ -83,7 +83,7 @@ The plugin returns a verification URL and user code. After browser approval it p
 
 Select `kimi-for-coding-oauth/kimi-for-coding` in opencode.
 
-Press **Ctrl+T** to pick a reasoning variant (`auto`, `off`, `low`, `medium`, `high`). `auto` lets Moonshot pick dynamically; `off` disables thinking; `low`/`medium`/`high` pin the effort level.
+Press **Ctrl+T** to pick a reasoning variant (`off`, `auto`, `low`, `medium`, `high`). `off` disables thinking; `auto` lets Moonshot pick dynamically; `low`/`medium`/`high` pin the effort level.
 
 ---
 
