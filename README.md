@@ -50,7 +50,14 @@ Add the plugin and a provider entry to `opencode.json` (or `~/.config/opencode/o
           "name": "Kimi K2.6 Code Preview",
           "limit": { "context": 262144, "output": 32768 },
           "reasoning": true,
-          "options": {}
+          "options": {},
+          "variants": {
+            "auto":   { "reasoning_effort": "auto" },
+            "off":    { "reasoning_effort": "off" },
+            "low":    { "reasoning_effort": "low" },
+            "medium": { "reasoning_effort": "medium" },
+            "high":   { "reasoning_effort": "high" }
+          }
         }
       }
     }
@@ -76,6 +83,8 @@ The plugin returns a verification URL and user code. After browser approval it p
 ### Use
 
 Select `kimi-for-coding-oauth/kimi-for-coding` in opencode.
+
+Press **Ctrl+T** to pick a reasoning variant (`auto`, `off`, `low`, `medium`, `high`). `auto` lets Moonshot pick dynamically; `off` disables thinking; `low`/`medium`/`high` pin the effort level.
 
 ---
 
@@ -122,10 +131,11 @@ Two upstream changes would narrow the gap, but neither would make this plugin re
 
 Effort-to-field mapping, taken verbatim from kimi-cli:
 
-| user effort | `reasoning_effort` | `thinking.type` |
+| user effort | `reasoning_effort` | `thinking` |
 |---|---|---|
-| `off` | *(omitted)* | `"disabled"` |
-| `low` / `medium` / `high` | same string | `"enabled"` |
+| `auto` | *(omitted)* | *(omitted)* — server picks dynamically |
+| `off` | *(omitted)* | `{ type: "disabled" }` |
+| `low` / `medium` / `high` | same string | `{ type: "enabled" }` |
 
 </details>
 

@@ -147,7 +147,14 @@ const plugin: Plugin = async ({ client }) => {
      * as `{ [providerID]: options }` via ProviderTransform.providerOptions.
      */
     "chat.params": async (input, output) => {
-      if (input.provider.info.id !== PROVIDER_ID) return
+      // Gate on model.providerID (the field opencode's llm.ts actually
+      // populates — `input.provider` is the flat `ProviderConfig` passed by
+      // `packages/opencode/src/session/llm.ts::stream`, so `input.provider.id`
+      // works too, but the @opencode-ai/plugin type for `ProviderContext`
+      // claims `.info.id` exists — the runtime shape disagrees. Using
+      // `input.model.providerID` is what every first-party plugin does
+      // (cloudflare.ts, codex.ts, github-copilot/copilot.ts).
+      if (input.model.providerID !== PROVIDER_ID) return
       if (input.model.id !== MODEL_ID) return
 
       // `prompt_cache_key` — stable per conversation so the backend can reuse
@@ -156,20 +163,33 @@ const plugin: Plugin = async ({ client }) => {
 
       // Thinking / reasoning effort. We mirror kimi-cli's mapping:
       //   - effort `off`   → no reasoning_effort, thinking.type = "disabled"
+      //   - effort `auto`  → omit both; let Moonshot pick dynamically
       //   - effort ∈ {low, medium, high} → reasoning_effort = effort,
       //     thinking.type = "enabled"
-      // If the user (or a higher-level hook) already set one of these, leave
-      // their value alone.
+      //
+      // Effort is read from opencode's options bag. It may be present as:
+      //   - `reasoning_effort` (wire shape; what model.variants typically set)
+      //   - `reasoningEffort`  (opencode camelCase passthrough)
+      //   - `reasoning.effort` / `providerOptions.<id>.reasoningEffort` (rare)
+      // We accept the first two, normalize, and leave any caller-supplied
+      // `thinking` object alone if they already set one.
       const effort = output.options.reasoning_effort ?? output.options.reasoningEffort
-      if (typeof effort === "string" && effort !== "off") {
+      if (effort === "auto") {
+        // Explicit "auto" variant: remove both knobs so the server picks.
+        delete output.options.reasoning_effort
+        delete output.options.reasoningEffort
+        delete output.options.thinking
+      } else if (typeof effort === "string" && effort !== "off") {
         output.options.reasoning_effort = effort
+        delete output.options.reasoningEffort
         output.options.thinking = output.options.thinking ?? { type: "enabled" }
       } else if (effort === "off") {
         delete output.options.reasoning_effort
         delete output.options.reasoningEffort
         output.options.thinking = { type: "disabled" }
       } else if (!output.options.thinking) {
-        // Default: thinking on, let the server pick effort (don't send one).
+        // No effort set at all → thinking enabled, no reasoning_effort
+        // (server picks). Matches kimi-cli's "nothing passed" default.
         output.options.thinking = { type: "enabled" }
       }
     },

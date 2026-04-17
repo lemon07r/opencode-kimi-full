@@ -55,14 +55,15 @@ These are the invariants that, if broken, silently degrade K2.6 → K2.5 or prod
 3. **`Authorization` header is owned by `loader.fetch`.** Anything else (opencode core, the SDK, future hooks) must be overridden. Our `loader` deletes both `authorization` and `Authorization` before setting its own.
 4. **Effort ↔ fields mapping** (kimi-cli `llm.py` / `kosong/chat_provider/kimi.py`):
 
-   | Effort   | `reasoning_effort` | `thinking.type` |
-   |----------|--------------------|-----------------|
-   | `off`    | *(omitted)*        | `"disabled"`    |
-   | `low`    | `"low"`            | `"enabled"`     |
-   | `medium` | `"medium"`         | `"enabled"`     |
-   | `high`   | `"high"`           | `"enabled"`     |
+   | Effort   | `reasoning_effort` | `thinking`            |
+   |----------|--------------------|-----------------------|
+   | `auto`   | *(omitted)*        | *(omitted)*           |
+   | `off`    | *(omitted)*        | `{type:"disabled"}`   |
+   | `low`    | `"low"`            | `{type:"enabled"}`    |
+   | `medium` | `"medium"`         | `{type:"enabled"}`    |
+   | `high`   | `"high"`           | `{type:"enabled"}`    |
 
-   Do not send `thinking.type="enabled"` with no `reasoning_effort` unless the request never had one to begin with (the default "server picks" case).
+   `auto` is the "let the server decide dynamically" variant — neither field is sent, matching kimi-cli's "nothing passed" default. When no effort is set at all, the plugin still emits `thinking: {type: "enabled"}` because the model is a reasoner. Gate the hook on `input.model.providerID` — NOT `input.provider.info.id`. The `@opencode-ai/plugin` `ProviderContext` type claims `.info.id` exists, but the runtime shape opencode passes (see `research/opencode/packages/opencode/src/session/llm.ts::stream`, ~line 168, `provider: item`) is the flat `ProviderConfig` (`.id`). `input.model.providerID` is what every first-party plugin uses (cloudflare.ts, codex.ts, github-copilot/copilot.ts) and it avoids the runtime crash "undefined is not an object (evaluating 'input.provider.info.id')". Tested live 2026-04-17.
 
 5. **`prompt_cache_key` only for `kimi-for-coding`.** Never attach it to unrelated models. The check is `input.model.id === MODEL_ID` in `chat.params`.
 6. **Model id goes over the wire verbatim.** Don't strip the `kimi-` prefix — the backend expects exactly `kimi-for-coding`.

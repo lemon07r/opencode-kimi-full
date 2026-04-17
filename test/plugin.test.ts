@@ -41,7 +41,14 @@ async function getHooks() {
 // ---------- chat.params -----------------------------------------------------
 
 // Minimal shape for input/output we care about in the params hook.
-type ParamsInput = { provider: { info: { id: string } }; model: { id: string }; sessionID: string }
+// Mirrors the runtime shape opencode actually passes (see
+// research/opencode/packages/opencode/src/session/llm.ts::stream — `model`
+// has `.providerID` and `.id`; `provider` is the flat ProviderConfig).
+type ParamsInput = {
+  provider: { id: string }
+  model: { providerID: string; id: string }
+  sessionID: string
+}
 type ParamsOutput = { options: Record<string, unknown> }
 function callParams(
   hook: (i: ParamsInput, o: ParamsOutput) => Promise<void> | void,
@@ -51,7 +58,10 @@ function callParams(
   sessionID = "sess-1",
 ) {
   const output: ParamsOutput = { options: { ...options } }
-  const res = hook({ provider: { info: { id: providerID } }, model: { id: modelID }, sessionID }, output)
+  const res = hook(
+    { provider: { id: providerID }, model: { providerID, id: modelID }, sessionID },
+    output,
+  )
   return { res, output }
 }
 
@@ -93,6 +103,16 @@ const EFFORT_MATRIX: Array<{
   { in: { reasoning_effort: "high" }, effort: "high", thinkingType: "enabled" },
   { in: {}, effort: undefined, thinkingType: "enabled" },
 ]
+
+test("chat.params: effort=auto → no reasoning_effort, no thinking (server picks dynamically)", async () => {
+  const { hooks } = await getHooks()
+  const { output } = await callParams(hooks["chat.params"]!, PROVIDER_ID, MODEL_ID, {
+    reasoning_effort: "auto",
+  })
+  expect(output.options.reasoning_effort).toBeUndefined()
+  expect(output.options.reasoningEffort).toBeUndefined()
+  expect(output.options.thinking).toBeUndefined()
+})
 for (const row of EFFORT_MATRIX) {
   test(`chat.params: effort=${JSON.stringify(row.in)} → effort=${row.effort}, thinking=${row.thinkingType}`, async () => {
     const { hooks } = await getHooks()
