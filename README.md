@@ -33,6 +33,8 @@ That installs the plugin through opencode and adds it to your global config. You
 
 If you prefer to edit config manually, add the package name to the `plugin` list in `~/.config/opencode/opencode.json` or a project-local `.opencode/opencode.json`:
 
+No separate `bun add` step is required for this path. opencode resolves bare npm plugin names itself.
+
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
