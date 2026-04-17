@@ -68,6 +68,7 @@ These are the invariants that, if broken, silently degrade K2.6 → K2.5 or prod
 6. **Model id goes over the wire verbatim.** Don't strip the `kimi-` prefix — the backend expects exactly `kimi-for-coding`.
 7. **Auth store is opencode's, not kimi-cli's.** We use `client.auth.get/set` against the `kimi-for-coding-oauth` provider id. Do not read/write `~/.kimi/credentials/kimi-code.json`; that's kimi-cli's file and sharing it across independent apps causes token-race bugs.
 8. **Provider id must not collide with any id in the [models.dev](https://models.dev) catalog.** models.dev publishes `kimi-for-coding` (static `KIMI_API_KEY` → `@ai-sdk/anthropic` → K2.5). If we registered under that same id, `opencode auth login kimi-for-coding` would surface two methods under one entry and users picking the API-key one would silently land on K2.5. We deliberately use `kimi-for-coding-oauth` instead; `MODEL_ID` on the wire stays `kimi-for-coding` (rule 6).
+9. **`src/index.ts` must have exactly one export — the default plugin function.** opencode's plugin loader (`research/opencode/packages/opencode/src/plugin/index.ts` → `getLegacyPlugins`) iterates every export of the plugin module and throws `Plugin export is not a function` if any named export is not callable. The failure mode is silent in the CLI (the provider just doesn't appear in `opencode auth login`); the error only surfaces in `~/.local/share/opencode/log/*.log`. Keep constants in `src/constants.ts` and import them in `src/index.ts` rather than re-exporting. `test/exports.test.ts` guards this.
 
 ### Working on this repo
 
@@ -86,13 +87,16 @@ These are the invariants that, if broken, silently degrade K2.6 → K2.5 or prod
 - ❌ Don't call out to other files to "share" the kimi-cli credentials. Different OAuth consumers must have independent refresh-token chains or one will invalidate the other.
 - ❌ Don't introduce a build step. The plugin ships as `.ts` and opencode's bun-based loader handles it.
 - ❌ Don't add tests that require real Kimi credentials and check them in. If you add offline unit tests, put them under `test/` and mock `fetch`.
+- ❌ Don't add named exports to `src/index.ts`. See rule 9.
 
 ### How to verify a change
 
 Offline:
 
 ```sh
-bun build --target=node --no-bundle src/index.ts   # syntax/type-ish check
+bunx tsc --noEmit                                  # type-check
+bun build --target=node --no-bundle src/index.ts   # syntax check
+bun test                                           # offline unit tests
 ```
 
 Online (requires a real Kimi-for-coding account):

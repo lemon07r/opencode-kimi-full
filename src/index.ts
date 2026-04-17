@@ -1,16 +1,13 @@
 import type { Plugin } from "@opencode-ai/plugin"
-import { MODEL_ID, REFRESH_SAFETY_WINDOW_MS } from "./constants.ts"
+import { MODEL_ID, PROVIDER_ID, REFRESH_SAFETY_WINDOW_MS } from "./constants.ts"
 import { kimiHeaders } from "./headers.ts"
 import { pollDeviceToken, refreshToken, startDeviceAuth } from "./oauth.ts"
 
-// Provider id the user must use in their opencode config. Keep it in sync with
-// README.md → "Configure opencode".
-//
-// Note: intentionally NOT "kimi-for-coding" — models.dev publishes an entry
-// under that id (static KIMI_API_KEY → K2.5 via @ai-sdk/anthropic), and sharing
-// the id would surface two auth methods under one `opencode auth login` entry
-// and silently route API-key users to the wrong backend. See AGENTS.md rule 7.
-export const PROVIDER_ID = "kimi-for-coding-oauth"
+// IMPORTANT: this module must have exactly ONE export — the default plugin
+// function. opencode's plugin loader (packages/opencode/src/plugin/index.ts →
+// getLegacyPlugins) iterates every export and throws "Plugin export is not a
+// function" if any named export is not a function. Keep constants in
+// constants.ts and import them here.
 
 type OAuthAuth = {
   type: "oauth"

@@ -68,7 +68,7 @@ Two identifiers are load-bearing:
 ### Log in
 
 ```sh
-opencode auth login kimi-for-coding-oauth
+opencode auth login -p kimi-for-coding-oauth
 ```
 
 The plugin returns a verification URL and user code. After browser approval it polls the device-auth endpoint and persists tokens through opencode's `auth.json`. Access tokens have a ~15 minute TTL and refresh automatically; refresh tokens last ~30 days.

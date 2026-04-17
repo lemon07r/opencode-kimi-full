@@ -48,6 +48,9 @@ jobs:
       - name: Syntax check (no bundle)
         run: bun build --target=node --no-bundle src/index.ts > /dev/null
 
+      - name: Run tests
+        run: bun test
+
       - name: Pack tarball
         id: pack
         run: |

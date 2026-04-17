@@ -1,0 +1,5 @@
+# Scope `bun test` to this project's own tests. Without this, bun discovers
+# *.test.ts files under research/ (shallow clones of opencode/kimi-cli) and
+# node_modules/, most of which will fail outside their own environments.
+[test]
+root = "test"
