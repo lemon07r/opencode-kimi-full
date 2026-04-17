@@ -40,32 +40,11 @@ type OAuthAuth = {
 const plugin: Plugin = async ({ client }) => {
   // --- helpers ---------------------------------------------------------------
 
-  const readAuth = async (): Promise<OAuthAuth | undefined> => {
-    const res = await client.auth.get({ path: { id: PROVIDER_ID } })
-    const data: any = (res as any).data ?? res
-    return data?.type === "oauth" ? (data as OAuthAuth) : undefined
-  }
-
   const persistAuth = async (auth: OAuthAuth) => {
     await client.auth.set({ path: { id: PROVIDER_ID }, body: auth })
   }
 
   const isExpiring = (auth: OAuthAuth) => auth.expires - Date.now() < REFRESH_SAFETY_WINDOW_MS
-
-  const ensureFresh = async (force = false): Promise<OAuthAuth> => {
-    const current = await readAuth()
-    if (!current) throw new Error("kimi-for-coding-oauth: not logged in — run `opencode auth login kimi-for-coding-oauth`")
-    if (!force && !isExpiring(current)) return current
-    const tokens = await refreshToken(current.refresh)
-    const next: OAuthAuth = {
-      type: "oauth",
-      refresh: tokens.refresh_token,
-      access: tokens.access_token,
-      expires: Date.now() + tokens.expires_in * 1000,
-    }
-    await persistAuth(next)
-    return next
-  }
 
   // --- return hooks ----------------------------------------------------------
 
@@ -77,8 +56,31 @@ const plugin: Plugin = async ({ client }) => {
        * Called every time opencode creates an `@ai-sdk/openai-compatible`
        * instance for this provider. We inject a `fetch` that owns all auth
        * and header concerns so no other hook has to worry about them.
+       *
+       * `readAuth` comes from opencode: it returns the currently persisted
+       * credentials for this provider id (opencode's `auth.json`). The SDK
+       * client intentionally does not expose a `get` — reading is scoped to
+       * this loader callback. Writes still go through `client.auth.set`.
        */
-      loader: async () => {
+      loader: async (readAuth) => {
+        const ensureFresh = async (force = false): Promise<OAuthAuth> => {
+          const current = (await readAuth()) as OAuthAuth | undefined
+          if (!current || current.type !== "oauth")
+            throw new Error(
+              "kimi-for-coding-oauth: not logged in — run `opencode auth login kimi-for-coding-oauth`",
+            )
+          if (!force && !isExpiring(current)) return current
+          const tokens = await refreshToken(current.refresh)
+          const next: OAuthAuth = {
+            type: "oauth",
+            refresh: tokens.refresh_token,
+            access: tokens.access_token,
+            expires: Date.now() + tokens.expires_in * 1000,
+          }
+          await persistAuth(next)
+          return next
+        }
+
         return {
           // We own the Authorization header entirely, but opencode still
           // requires a truthy apiKey to wire things up; use a sentinel.
