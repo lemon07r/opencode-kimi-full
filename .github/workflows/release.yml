@@ -1,0 +1,96 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  release:
+    name: Publish release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Verify tag matches package.json version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg=$(node -p "require('./package.json').version")
+          if [ "$tag" != "$pkg" ]; then
+            echo "Tag v$tag does not match package.json version $pkg" >&2
+            exit 1
+          fi
+
+      - name: Install dev deps
+        run: bun install --frozen-lockfile || bun install
+
+      - name: Type-check
+        run: bunx tsc --noEmit
+
+      - name: Syntax check (no bundle)
+        run: bun build --target=node --no-bundle src/index.ts > /dev/null
+
+      - name: Pack tarball
+        id: pack
+        run: |
+          file=$(npm pack --silent)
+          echo "file=$file" >> "$GITHUB_OUTPUT"
+          echo "Packed $file"
+          tar -tzf "$file"
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          tag="$GITHUB_REF_NAME"
+          prev=$(git tag --sort=-creatordate | grep -v "^${tag}$" | head -n1 || true)
+          {
+            echo "## ${tag}"
+            echo
+            if [ -n "$prev" ]; then
+              echo "Changes since \`${prev}\`:"
+              echo
+              git log --no-merges --pretty=format:'- %s (%h)' "${prev}..${tag}"
+              echo
+              echo
+              echo "**Full diff:** https://github.com/${GITHUB_REPOSITORY}/compare/${prev}...${tag}"
+            else
+              echo "Initial release."
+              echo
+              git log --no-merges --pretty=format:'- %s (%h)' "${tag}"
+            fi
+          } > CHANGELOG_RELEASE.md
+          cat CHANGELOG_RELEASE.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          body_path: CHANGELOG_RELEASE.md
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          files: ${{ steps.pack.outputs.file }}
+
+      - name: Publish to npm
+        if: ${{ env.NPM_TOKEN != '' }}
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --provenance --access public

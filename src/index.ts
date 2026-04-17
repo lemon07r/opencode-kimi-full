@@ -5,7 +5,12 @@ import { pollDeviceToken, refreshToken, startDeviceAuth } from "./oauth.ts"
 
 // Provider id the user must use in their opencode config. Keep it in sync with
 // README.md → "Configure opencode".
-export const PROVIDER_ID = "kimi-for-coding"
+//
+// Note: intentionally NOT "kimi-for-coding" — models.dev publishes an entry
+// under that id (static KIMI_API_KEY → K2.5 via @ai-sdk/anthropic), and sharing
+// the id would surface two auth methods under one `opencode auth login` entry
+// and silently route API-key users to the wrong backend. See AGENTS.md rule 7.
+export const PROVIDER_ID = "kimi-for-coding-oauth"
 
 type OAuthAuth = {
   type: "oauth"
@@ -18,8 +23,8 @@ type OAuthAuth = {
  * Plugin entry point.
  *
  * Responsibilities, in order of execution:
- *   1. `auth`    — register device-flow OAuth login under the `kimi-for-coding`
- *                  provider id. opencode persists the returned tokens in its
+ *   1. `auth`    — register device-flow OAuth login under the
+ *                  `kimi-for-coding-oauth` provider id. opencode persists the returned tokens in its
  *                  own auth.json; we never touch disk for credentials.
  *   2. `loader`  — runs every time opencode instantiates the provider. Returns
  *                  a custom `fetch` that (a) refreshes the access token when
@@ -49,7 +54,7 @@ const plugin: Plugin = async ({ client }) => {
 
   const ensureFresh = async (force = false): Promise<OAuthAuth> => {
     const current = await readAuth()
-    if (!current) throw new Error("kimi-for-coding: not logged in — run `opencode auth login kimi-for-coding`")
+    if (!current) throw new Error("kimi-for-coding-oauth: not logged in — run `opencode auth login kimi-for-coding-oauth`")
     if (!force && !isExpiring(current)) return current
     const tokens = await refreshToken(current.refresh)
     const next: OAuthAuth = {

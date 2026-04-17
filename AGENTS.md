@@ -66,20 +66,22 @@ These are the invariants that, if broken, silently degrade K2.6 → K2.5 or prod
 
 5. **`prompt_cache_key` only for `kimi-for-coding`.** Never attach it to unrelated models. The check is `input.model.id === MODEL_ID` in `chat.params`.
 6. **Model id goes over the wire verbatim.** Don't strip the `kimi-` prefix — the backend expects exactly `kimi-for-coding`.
-7. **Auth store is opencode's, not kimi-cli's.** We use `client.auth.get/set` against the `kimi-for-coding` provider id. Do not read/write `~/.kimi/credentials/kimi-code.json`; that's kimi-cli's file and sharing it across independent apps causes token-race bugs.
+7. **Auth store is opencode's, not kimi-cli's.** We use `client.auth.get/set` against the `kimi-for-coding-oauth` provider id. Do not read/write `~/.kimi/credentials/kimi-code.json`; that's kimi-cli's file and sharing it across independent apps causes token-race bugs.
+8. **Provider id must not collide with any id in the [models.dev](https://models.dev) catalog.** models.dev publishes `kimi-for-coding` (static `KIMI_API_KEY` → `@ai-sdk/anthropic` → K2.5). If we registered under that same id, `opencode auth login kimi-for-coding` would surface two methods under one entry and users picking the API-key one would silently land on K2.5. We deliberately use `kimi-for-coding-oauth` instead; `MODEL_ID` on the wire stays `kimi-for-coding` (rule 6).
 
 ### Working on this repo
 
 - **Code style:** see `tsconfig.json` (strict, `noUncheckedIndexedAccess`, ES2022). Prefer small pure functions, avoid `try`/`catch` except where we genuinely convert one error shape to another.
 - **Comments:** match the existing density — only explain non-obvious upstream-parity reasoning. Do not narrate the obvious ("// refresh the token"); instead reference upstream files when the reasoning is "because kimi-cli does it that way".
 - **Dependencies:** runtime deps stay at **zero**. The only dev/peer dep is `@opencode-ai/plugin` for types.
-- **Git commits:** small, logical, imperative subject ("Add oauth device flow"). When committing, pass `--trailer "Co-authored-by: Junie <junie@jetbrains.com>"` if you are an AI agent.
+- **Git commits:** small, logical, imperative subject ("Add oauth device flow"). Do not add a `Co-authored-by` trailer.
 - **Upstream research:** the `research/` directory is a read-only git-ignored pair of shallow clones (opencode + kimi-cli) for grep. Never edit files there; re-clone if you suspect drift. When citing upstream in a comment, use the `research/…` path so the reference is resolvable.
-- **Version bumps:** when kimi-cli bumps, (1) pull a fresh `research/kimi-cli`, (2) update `KIMI_CLI_VERSION` in `src/constants.ts`, (3) re-diff `_kimi_default_headers()` / `oauth.py` against `src/headers.ts` and `src/oauth.ts`, (4) smoke-test with `opencode auth login kimi-for-coding` and a one-turn chat, (5) tag release.
+- **Version bumps:** when kimi-cli bumps, (1) pull a fresh `research/kimi-cli`, (2) update `KIMI_CLI_VERSION` in `src/constants.ts`, (3) re-diff `_kimi_default_headers()` / `oauth.py` against `src/headers.ts` and `src/oauth.ts`, (4) smoke-test with `opencode auth login kimi-for-coding-oauth` and a one-turn chat, (5) tag release.
 
 ### What not to do
 
 - ❌ Don't add heuristics that look at the model id outside of `chat.params`. The `auth.loader` fetch is already scoped to this provider; the only place that needs to match on `kimi-for-coding` is the params hook.
+- ❌ Don't rename the provider id back to `kimi-for-coding` or to anything else listed in models.dev. See rule 8.
 - ❌ Don't add new header values that kimi-cli doesn't send. The fingerprint matters.
 - ❌ Don't call out to other files to "share" the kimi-cli credentials. Different OAuth consumers must have independent refresh-token chains or one will invalidate the other.
 - ❌ Don't introduce a build step. The plugin ships as `.ts` and opencode's bun-based loader handles it.
@@ -97,8 +99,8 @@ Online (requires a real Kimi-for-coding account):
 
 1. `cd ~/.opencode && bun add /path/to/this/repo`
 2. Paste the provider block from `README.md` into your opencode config.
-3. `opencode auth login kimi-for-coding` — confirm a token lands in opencode's `auth.json` with `type: "oauth"`, a JWT `access`, and `expires` ~15 min in the future.
-4. Start opencode, select `kimi-for-coding/kimi-for-coding`, and ask the model to self-identify. It should claim to be K2.6 / `kimi-for-coding`.
+3. `opencode auth login kimi-for-coding-oauth` — confirm a token lands in opencode's `auth.json` with `type: "oauth"`, a JWT `access`, and `expires` ~15 min in the future.
+4. Start opencode, select `kimi-for-coding-oauth/kimi-for-coding`, and ask the model to self-identify. It should claim to be K2.6 / `kimi-for-coding`.
 5. Confirm `reasoning_content` deltas render as thinking content (not assistant text).
 6. In a second turn of the same session, confirm the response comes back faster (cache hit via `prompt_cache_key`).
 
