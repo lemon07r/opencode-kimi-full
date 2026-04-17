@@ -2,7 +2,7 @@
 
 An [opencode](https://opencode.ai) plugin for the **Kimi For Coding** plan.
 
-This plugin authenticates the same way the official [kimi-cli](https://github.com/MoonshotAI/kimi-cli) does and mirrors its wire shape, so opencode's requests to Moonshot's `/coding` endpoint match kimi-cli byte-for-byte: OAuth device flow with `scope: kimi-code`, the seven `X-Msh-*` fingerprint headers and kimi-cli-shaped `User-Agent`, a `~/.kimi/device_id` shared with a locally-installed kimi-cli, `prompt_cache_key` set to opencode's session id for session-scoped cache hits, and paired `thinking` + `reasoning_effort` body fields. These are Kimi-specific extensions on top of the OpenAI-compatible shape that the `/coding` endpoint expects from kimi-cli, and opencode doesn't send them on its built-in Kimi For Coding path.
+This plugin authenticates the same way the official [kimi-cli](https://github.com/MoonshotAI/kimi-cli) does and mirrors its wire shape, so opencode's requests to Moonshot's `/coding` endpoint match kimi-cli byte-for-byte: OAuth device flow with `scope: kimi-code`, the seven `X-Msh-*` fingerprint headers and kimi-cli-shaped `User-Agent`, a `~/.kimi/device_id` shared with a locally-installed kimi-cli, `prompt_cache_key` set to opencode's session id for session-scoped cache hits, and paired `thinking` + `reasoning_effort` body fields. These are Kimi-specific extensions on top of the OpenAI-compatible shape that the `/coding` endpoint expects from kimi-cli, and opencode doesn't send them on its built-in Kimi For Coding path. This is also currently the only way to get Kimi K2.6 on any agents outside of Kimi CLI. 
 
 Contributor and agent documentation lives in [`AGENTS.md`](./AGENTS.md).
 
