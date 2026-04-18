@@ -30,6 +30,12 @@ type KimiBodyFields = {
   reasoning_effort?: string
 }
 
+type ModelWithContextLimit = {
+  limit?: {
+    context?: number
+  }
+}
+
 type KimiHookInput = {
   sessionID: string
   model: {
@@ -48,6 +54,17 @@ type KimiHookInput = {
 const INTERNAL_PROMPT_CACHE_KEY_HEADER = "x-opencode-kimi-prompt-cache-key"
 const INTERNAL_REASONING_EFFORT_HEADER = "x-opencode-kimi-reasoning-effort"
 const INTERNAL_THINKING_TYPE_HEADER = "x-opencode-kimi-thinking-type"
+
+function isOAuthAuth(value: unknown): value is OAuthAuth {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false
+  const auth = value as Partial<OAuthAuth>
+  return (
+    auth.type === "oauth" &&
+    typeof auth.access === "string" &&
+    typeof auth.refresh === "string" &&
+    typeof auth.expires === "number"
+  )
+}
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return
@@ -134,6 +151,29 @@ function pickModelInfo(models: KimiModelInfo[]): ModelDiscovery {
   }
 }
 
+function withDiscoveredContext<T extends ModelWithContextLimit>(model: T, contextLength: number | undefined): T {
+  if (!contextLength || contextLength <= 0) return model
+  if ((model.limit?.context ?? 0) > 0) return model
+  return {
+    ...model,
+    limit: {
+      ...model.limit,
+      context: contextLength,
+    },
+  }
+}
+
+function applyDiscoveryToModels<T extends Record<string, ModelWithContextLimit>>(models: T, discovery: ModelDiscovery): T {
+  const current = models[MODEL_ID]
+  if (!current) return models
+  const next = withDiscoveredContext(current, discovery.context_length)
+  if (next === current) return models
+  return {
+    ...models,
+    [MODEL_ID]: next,
+  }
+}
+
 function buildConfigBlock(info: { model_id: string; context_length?: number; display?: string }) {
   const name = info.display ?? "Kimi For Coding"
   const ctx = info.context_length ?? 0
@@ -185,16 +225,21 @@ function buildConfigBlock(info: { model_id: string; context_length?: number; dis
  *                  (c) lazily discovers the current wire model id from
  *                  `GET /coding/v1/models`, and (d) retries once with a forced
  *                  refresh on 401.
- *   3. `chat.headers` — computes the Kimi-specific request body fields the
+ *   3. `provider.models` — discovers `context_length` early enough to patch
+ *                  opencode's model metadata when the user's config still has
+ *                  the default zero context window.
+ *   4. `chat.headers` — computes the Kimi-specific request body fields the
  *                  model actually needs (`thinking.type`,
  *                  `reasoning_effort`, `prompt_cache_key`) and passes them to
  *                  `loader.fetch` via private headers.
- *   4. `chat.params` — mirrors the same fields into `output.options` for
+ *   5. `chat.params` — mirrors the same fields into `output.options` for
  *                  forward-compat if opencode fixes its current
  *                  openai-compatible providerOptions namespace mismatch.
  */
 const plugin: Plugin = async ({ client }) => {
   // --- helpers ---------------------------------------------------------------
+
+  let cachedDiscovery: ModelDiscovery = {}
 
   const persistAuth = async (auth: OAuthAuth) => {
     await client.auth.set({ path: { id: PROVIDER_ID }, body: auth })
@@ -202,9 +247,50 @@ const plugin: Plugin = async ({ client }) => {
 
   const isExpiring = (auth: OAuthAuth) => auth.expires - Date.now() < REFRESH_SAFETY_WINDOW_MS
 
+  const rememberDiscovery = (discovery: ModelDiscovery) => {
+    if (discovery.model_id) cachedDiscovery = discovery
+    return cachedDiscovery
+  }
+
+  const refreshAuth = async (auth: OAuthAuth) => {
+    const tokens = await refreshToken(auth.refresh)
+    const next: OAuthAuth = {
+      type: "oauth",
+      refresh: tokens.refresh_token,
+      access: tokens.access_token,
+      expires: Date.now() + tokens.expires_in * 1000,
+    }
+    await persistAuth(next)
+    return next
+  }
+
   // --- return hooks ----------------------------------------------------------
 
   return {
+    provider: {
+      id: PROVIDER_ID,
+      models: async (provider, ctx) => {
+        if (!isOAuthAuth(ctx.auth)) return provider.models
+
+        const discover = async (auth: OAuthAuth) =>
+          applyDiscoveryToModels(provider.models, rememberDiscovery(pickModelInfo(await listModels(auth.access))))
+
+        const current = ctx.auth
+        let auth = current
+        try {
+          if (isExpiring(auth)) auth = await refreshAuth(auth)
+          return await discover(auth)
+        } catch (error) {
+          if (auth !== current || (error as { status?: number }).status !== 401) return provider.models
+        }
+
+        try {
+          return await discover(await refreshAuth(current))
+        } catch {
+          return provider.models
+        }
+      },
+    },
     auth: {
       provider: PROVIDER_ID,
 
@@ -219,15 +305,14 @@ const plugin: Plugin = async ({ client }) => {
        * this loader callback. Writes still go through `client.auth.set`.
        */
       loader: async (readAuth) => {
-        let discovery: ModelDiscovery = {}
+        let discovery: ModelDiscovery = cachedDiscovery
 
         const discoverModelInfo = async (access: string): Promise<ModelDiscovery> => {
           // opencode's SDK auth schema only persists the standard oauth fields
           // (`refresh`/`access`/`expires`) on `client.auth.set`, so discovery
           // cannot live durably in auth.json across refresh writes. Cache it in
           // this loader instance instead, and repopulate lazily on startup.
-          const next = pickModelInfo(await listModels(access))
-          if (next.model_id) discovery = next
+          discovery = rememberDiscovery(pickModelInfo(await listModels(access)))
           return discovery
         }
 
@@ -238,6 +323,7 @@ const plugin: Plugin = async ({ client }) => {
               context_length: auth.context_length,
               model_display: auth.model_display,
             }
+            cachedDiscovery = discovery
           }
           if (discovery.model_id) return { ...auth, ...discovery }
           try {
@@ -254,7 +340,7 @@ const plugin: Plugin = async ({ client }) => {
               "kimi-for-coding-oauth: not logged in — run `opencode auth login kimi-for-coding-oauth`",
             )
           if (!force && !isExpiring(current)) return ensureDiscovered(current)
-          const tokens = await refreshToken(current.refresh)
+          const next = await refreshAuth(current)
           // kimi-cli re-runs `refresh_managed_models` on every successful
           // refresh — we mirror that so entitlement changes (e.g. an
           // account gaining/losing K2.6 access) are picked up without a
@@ -262,17 +348,10 @@ const plugin: Plugin = async ({ client }) => {
           // warm in-memory discovery still works for the common case, and
           // the request-path 401 retry will flush a broken access token.
           try {
-            await discoverModelInfo(tokens.access_token)
+            await discoverModelInfo(next.access)
           } catch {
             /* keep previous discovery */
           }
-          const next: OAuthAuth = {
-            type: "oauth",
-            refresh: tokens.refresh_token,
-            access: tokens.access_token,
-            expires: Date.now() + tokens.expires_in * 1000,
-          }
-          await persistAuth(next)
           return { ...next, ...discovery }
         }
 

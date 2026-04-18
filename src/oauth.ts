@@ -199,7 +199,9 @@ export async function listModels(accessToken: string): Promise<KimiModelInfo[]> 
   })
   const text = await res.text()
   if (!res.ok) {
-    throw new Error(`kimi list-models ${res.status}: ${text.slice(0, 200)}`)
+    const err = new Error(`kimi list-models ${res.status}: ${text.slice(0, 200)}`) as Error & { status?: number }
+    err.status = res.status
+    throw err
   }
   let json: any
   try {

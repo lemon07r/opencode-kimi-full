@@ -1,6 +1,6 @@
 {
   "name": "opencode-kimi-full",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "OpenCode plugin that adds first-class support for Kimi K2.6 (kimi-for-coding) via the official Kimi OAuth device flow, matching the upstream kimi-cli 1:1.",
   "license": "MIT",
   "repository": {

@@ -239,6 +239,86 @@ async function getLoaderFetch(readAuth: () => Promise<unknown>) {
   return { fetch: (res as { fetch: typeof fetch }).fetch, apiKey: (res as { apiKey: string }).apiKey, writes }
 }
 
+function makeProviderState(context = 0) {
+  return {
+    id: PROVIDER_ID,
+    models: {
+      [MODEL_ID]: {
+        name: "Kimi For Coding",
+        reasoning: true,
+        options: {},
+        limit: { context },
+        variants: {
+          auto: { reasoning_effort: "auto" },
+        },
+      },
+      "some-other-model": {
+        name: "Other",
+        reasoning: false,
+        options: {},
+        limit: { context: 1234 },
+      },
+    },
+  }
+}
+
+// ---------- provider.models -------------------------------------------------
+
+test("provider.models: fills limit.context from discovery when config still has zero", async () => {
+  mock = installFetchMock((call) => {
+    if (call.url.endsWith("/coding/v1/models")) {
+      return { body: { data: [{ id: MODEL_ID, context_length: 262144 }] } }
+    }
+    return { body: { ok: true } }
+  })
+  const { hooks, writes } = await getHooks()
+  const provider = makeProviderState()
+  const next = await hooks.provider!.models!(provider as any, { auth: validAuth() } as any)
+  expect(next[MODEL_ID]!.limit?.context).toBe(262144)
+  expect(next["some-other-model"]!.limit?.context).toBe(1234)
+  expect(provider.models[MODEL_ID]!.limit?.context).toBe(0)
+  expect(writes).toHaveLength(0)
+})
+
+test("provider.models: preserves an explicit user context limit", async () => {
+  mock = installFetchMock((call) => {
+    if (call.url.endsWith("/coding/v1/models")) {
+      return { body: { data: [{ id: MODEL_ID, context_length: 262144 }] } }
+    }
+    return { body: { ok: true } }
+  })
+  const { hooks } = await getHooks()
+  const provider = makeProviderState(8192)
+  const next = await hooks.provider!.models!(provider as any, { auth: validAuth() } as any)
+  expect(next[MODEL_ID]!.limit?.context).toBe(8192)
+})
+
+test("provider.models: retries once with a refreshed token after 401", async () => {
+  mock = installFetchMock((call) => {
+    if (call.url.endsWith("/coding/v1/models") && call.headers["authorization"] === "Bearer stale") {
+      return { status: 401, body: { error: "unauthorized" } }
+    }
+    if (call.url.includes("/oauth/token")) {
+      return { body: { access_token: "fresh", refresh_token: "refresh-2", token_type: "Bearer", expires_in: 900 } }
+    }
+    if (call.url.endsWith("/coding/v1/models") && call.headers["authorization"] === "Bearer fresh") {
+      return { body: { data: [{ id: MODEL_ID, context_length: 131072 }] } }
+    }
+    return { body: { ok: true } }
+  })
+  const { hooks, writes } = await getHooks()
+  const provider = makeProviderState()
+  const next = await hooks.provider!.models!(provider as any, { auth: validAuth({ access: "stale" }) } as any)
+  expect(mock.calls.map((c) => c.url)).toEqual([
+    "https://api.kimi.com/coding/v1/models",
+    "https://auth.kimi.com/api/oauth/token",
+    "https://api.kimi.com/coding/v1/models",
+  ])
+  expect(mock.calls[2]!.headers["authorization"]).toBe("Bearer fresh")
+  expect(next[MODEL_ID]!.limit?.context).toBe(131072)
+  expect((writes[0]!.body as { access: string }).access).toBe("fresh")
+})
+
 test("auth.loader: refuses to run when no credentials are persisted", async () => {
   const { fetch: f } = await getLoaderFetch(async () => undefined)
   await expect(f("https://api.kimi.com/coding/v1/models")).rejects.toThrow(/not logged in/)
@@ -334,6 +414,35 @@ test("auth.loader: injects selected reasoning_effort from private headers into t
     prompt_cache_key: "sess-high",
     reasoning_effort: "high",
     thinking: { type: "enabled" },
+  })
+})
+
+test("auth.loader: effort=auto injects only prompt_cache_key and never synthesizes temperature", async () => {
+  const { hooks } = await getHooks()
+  const { output: headerOutput } = await callHeaders(hooks["chat.headers"]!, {
+    sessionID: "sess-auto",
+    variants: { auto: { reasoning_effort: "auto" } },
+    variant: "auto",
+  })
+  mock = installFetchMock((call) => {
+    if (call.url.endsWith("/coding/v1/models")) {
+      return { body: { data: [{ id: MODEL_ID, context_length: 262144 }] } }
+    }
+    return { body: { ok: true } }
+  })
+  const { fetch: f } = await getLoaderFetch(async () => validAuth())
+  await f("https://api.kimi.com/coding/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      ...headerOutput.headers,
+    },
+    body: JSON.stringify({ model: MODEL_ID, messages: [] }),
+  })
+  expect(JSON.parse(mock.calls[1]!.body as string)).toEqual({
+    model: MODEL_ID,
+    messages: [],
+    prompt_cache_key: "sess-auto",
   })
 })
 
