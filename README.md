@@ -9,6 +9,7 @@ This plugin:
 - sends the same `User-Agent` / `X-Msh-*` fingerprint headers as `kimi-cli`
 - reuses `~/.kimi/device_id` for `X-Msh-Device-Id`
 - adds `prompt_cache_key`, `thinking`, and `reasoning_effort` for `kimi-for-coding` requests
+- is currently the only way to get Kimi K2.6 outside of using Kimi CLI + OAuth
 
 This is the K2.6 / `kimi-for-coding` OAuth path: Moonshot routes static `sk-kimi-...` API keys to K2.5, and OAuth tokens with `scope: kimi-code` to K2.6.
 
