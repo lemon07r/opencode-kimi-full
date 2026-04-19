@@ -1,3 +1,6 @@
+import fs from "node:fs/promises"
+import os from "node:os"
+import path from "node:path"
 import { test, expect, afterEach } from "bun:test"
 import plugin from "../src/index.ts"
 import { MODEL_ID, PROVIDER_ID, REFRESH_SAFETY_WINDOW_MS } from "../src/constants.ts"
@@ -7,11 +10,44 @@ import { installFetchMock } from "./_util/fetchMock.ts"
 // shared with kimi-cli by design and writes are idempotent — no HOME
 // redirect needed.
 
+const TEST_XDG_DATA_HOME = path.join(os.tmpdir(), `opencode-kimi-full-test-${process.pid}`)
+process.env.XDG_DATA_HOME = TEST_XDG_DATA_HOME
+delete process.env.OPENCODE_AUTH_CONTENT
+
 let mock: ReturnType<typeof installFetchMock> | undefined
-afterEach(() => {
+afterEach(async () => {
   mock?.restore()
   mock = undefined
+  process.env.XDG_DATA_HOME = TEST_XDG_DATA_HOME
+  delete process.env.OPENCODE_AUTH_CONTENT
+  await fs.rm(TEST_XDG_DATA_HOME, { recursive: true, force: true })
 })
+
+async function withTempAuthStore<T>(entry: unknown, run: (root: string) => Promise<T>) {
+  const prev = process.env.XDG_DATA_HOME
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "opencode-kimi-full-"))
+  process.env.XDG_DATA_HOME = root
+  await writeAuthStore(root, entry)
+  try {
+    return await run(root)
+  } finally {
+    if (prev === undefined) {
+      delete process.env.XDG_DATA_HOME
+    } else {
+      process.env.XDG_DATA_HOME = prev
+    }
+    await fs.rm(root, { recursive: true, force: true })
+  }
+}
+
+function authStorePath(root: string) {
+  return path.join(root, "opencode", "auth.json")
+}
+
+async function writeAuthStore(root: string, entry: unknown) {
+  await fs.mkdir(path.dirname(authStorePath(root)), { recursive: true })
+  await fs.writeFile(authStorePath(root), JSON.stringify({ [PROVIDER_ID]: entry }), "utf8")
+}
 
 // Fake opencode plugin context. Only `client.auth.set` is used by the
 // plugin's writes; reads go through the `readAuth` callback passed to
@@ -329,6 +365,26 @@ test("provider.models: retries once with a refreshed token after 401", async () 
   expect((writes[0]!.body as { access: string }).access).toBe("fresh")
 })
 
+test("provider.models: prefers the live auth store over a stale ctx.auth snapshot", async () => {
+  await withTempAuthStore(validAuth({ access: "fresh", refresh: "refresh-2" }), async () => {
+    mock = installFetchMock((call) => {
+      if (call.url.endsWith("/coding/v1/models") && call.headers["authorization"] === "Bearer fresh") {
+        return { body: { data: [{ id: MODEL_ID, context_length: 131072 }] } }
+      }
+      return { status: 401, body: { error: "unauthorized" } }
+    })
+    const { hooks } = await getHooks()
+    const provider = makeProviderState()
+    const next = await hooks.provider!.models!(
+      provider as any,
+      { auth: validAuth({ access: "stale", refresh: "refresh-1" }) } as any,
+    )
+    expect(mock.calls).toHaveLength(1)
+    expect(mock.calls[0]!.headers["authorization"]).toBe("Bearer fresh")
+    expect(next[MODEL_ID]!.limit?.context).toBe(131072)
+  })
+})
+
 test("auth.loader: refuses to run when no credentials are persisted", async () => {
   const { fetch: f } = await getLoaderFetch(async () => undefined)
   await expect(f("https://api.kimi.com/coding/v1/models")).rejects.toThrow(/not logged in/)
@@ -337,6 +393,25 @@ test("auth.loader: refuses to run when no credentials are persisted", async () =
 test("auth.loader: apiKey sentinel is returned (opencode requires truthy)", async () => {
   const { apiKey } = await getLoaderFetch(async () => validAuth())
   expect(apiKey).toBe("kimi-for-coding-oauth")
+})
+
+test("auth.loader: prefers live auth.json over a stale readAuth snapshot", async () => {
+  await withTempAuthStore(validAuth({ access: "fresh", refresh: "refresh-2" }), async () => {
+    mock = installFetchMock((call) => {
+      if (call.url.endsWith("/coding/v1/models")) {
+        return { body: { data: [{ id: MODEL_ID, context_length: 262144 }] } }
+      }
+      return { body: { ok: true } }
+    })
+    const { fetch: f } = await getLoaderFetch(async () => validAuth({ access: "stale", refresh: "refresh-1" }))
+    await f("https://api.kimi.com/coding/v1/chat")
+    expect(mock.calls.map((c) => c.url)).toEqual([
+      "https://api.kimi.com/coding/v1/models",
+      "https://api.kimi.com/coding/v1/chat",
+    ])
+    expect(mock.calls[0]!.headers["authorization"]).toBe("Bearer fresh")
+    expect(mock.calls[1]!.headers["authorization"]).toBe("Bearer fresh")
+  })
 })
 
 test("auth.loader: owns Authorization and strips any caller-supplied value (rule 3)", async () => {
@@ -561,6 +636,45 @@ test("provider.models and auth.loader share one in-flight refresh exchange", asy
   expect(writes).toHaveLength(1)
 })
 
+test("auth.loader: separate plugin instances share one refresh via the auth-store lock", async () => {
+  const stale = validAuth({ access: "stale", expires: Date.now() + REFRESH_SAFETY_WINDOW_MS / 2 })
+  await withTempAuthStore(stale, async (root) => {
+    const gate = deferred<void>()
+    mock = installFetchMock(async (call) => {
+      if (call.url.includes("/oauth/token")) {
+        await gate.promise
+        const next = validAuth({ access: "access-2", refresh: "refresh-2", expires: Date.now() + 15 * 60_000 })
+        await writeAuthStore(root, next)
+        return { body: { access_token: next.access, refresh_token: next.refresh, token_type: "Bearer", expires_in: 900 } }
+      }
+      if (call.url.endsWith("/coding/v1/models")) {
+        return { body: { data: [{ id: MODEL_ID, context_length: 262144 }] } }
+      }
+      return { body: { ok: true } }
+    })
+    const readAuth = async () => stale
+    const { fetch: f1 } = await getLoaderFetch(readAuth)
+    const { fetch: f2 } = await getLoaderFetch(readAuth)
+    const request = {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: MODEL_ID, messages: [] }),
+    }
+
+    const p1 = f1("https://api.kimi.com/coding/v1/chat/completions", request)
+    const p2 = f2("https://api.kimi.com/coding/v1/chat/completions", request)
+    await new Promise((r) => setTimeout(r, 0))
+    gate.resolve()
+    await Promise.all([p1, p2])
+
+    expect(mock.calls.filter((c) => c.url.includes("/oauth/token"))).toHaveLength(1)
+    expect(mock.calls.filter((c) => c.url.endsWith("/coding/v1/chat/completions")).map((c) => c.headers["authorization"])).toEqual([
+      "Bearer access-2",
+      "Bearer access-2",
+    ])
+  })
+})
+
 test("auth.loader: prefers the canonical MODEL_ID slug when /models returns multiple", async () => {
   // Server returns several entries; the canonical `kimi-for-coding` is not first.
   // Selection must still prefer it over the first element.
@@ -603,6 +717,37 @@ test("auth.loader: model discovery failure does not break refresh (graceful)", a
   // Persisted despite /models failing; just no model_id.
   expect((writes[0]!.body as { access: string }).access).toBe("new")
   expect((writes[0]!.body as { model_id?: string }).model_id).toBeUndefined()
+})
+
+test("auth.loader: invalid_grant self-heals when the live auth store rotated mid-refresh", async () => {
+  const stale = validAuth({ access: "stale", expires: Date.now() + REFRESH_SAFETY_WINDOW_MS / 2 })
+  await withTempAuthStore(stale, async (root) => {
+    mock = installFetchMock(async (call) => {
+      if (call.url.includes("/oauth/token")) {
+        const next = validAuth({ access: "fresh", refresh: "refresh-2", expires: Date.now() + 15 * 60_000 })
+        await writeAuthStore(root, next)
+        return {
+          status: 400,
+          body: { error: "invalid_grant", error_description: "The provided authorization grant is invalid" },
+        }
+      }
+      if (call.url.endsWith("/coding/v1/models")) {
+        return { body: { data: [{ id: MODEL_ID, context_length: 262144 }] } }
+      }
+      return { body: { ok: true } }
+    })
+    const { fetch: f, writes } = await getLoaderFetch(async () => stale)
+    const res = await f("https://api.kimi.com/coding/v1/chat")
+    expect(res.ok).toBe(true)
+    expect(mock.calls.map((c) => c.url)).toEqual([
+      "https://auth.kimi.com/api/oauth/token",
+      "https://api.kimi.com/coding/v1/models",
+      "https://api.kimi.com/coding/v1/chat",
+    ])
+    expect(mock.calls[1]!.headers["authorization"]).toBe("Bearer fresh")
+    expect(mock.calls[2]!.headers["authorization"]).toBe("Bearer fresh")
+    expect(writes).toHaveLength(0)
+  })
 })
 
 test("auth.loader: discovers /models on first request when auth storage only has bare oauth fields", async () => {

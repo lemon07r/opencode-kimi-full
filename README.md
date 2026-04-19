@@ -100,7 +100,7 @@ Two identifiers are load-bearing:
 opencode auth login -p kimi-for-coding-oauth
 ```
 
-The plugin returns a verification URL and user code. After browser approval it polls the device-auth endpoint, queries `/coding/v1/models` to discover the current model id and context length for your account, prints a ready-to-paste config snippet, and stores the token in opencode's auth store. The authorization message still includes the discovered context length; the snippet intentionally omits `limit` because opencode's schema requires `limit.output` too, and Kimi's models endpoint only exposes `context_length`. Model discovery runs again on every token refresh, and a fresh loader instance will re-query `/coding/v1/models` on first use if it needs the current wire model id. Access tokens refresh automatically, and the loader retries once after a `401`.
+The plugin returns a verification URL and user code. After browser approval it polls the device-auth endpoint, queries `/coding/v1/models` to discover the current model id and context length for your account, prints a ready-to-paste config snippet, and stores the token in opencode's auth store. The authorization message still includes the discovered context length; the snippet intentionally omits `limit` because opencode's schema requires `limit.output` too, and Kimi's models endpoint only exposes `context_length`. Model discovery runs again on every token refresh, and a fresh loader instance will re-query `/coding/v1/models` on first use if it needs the current wire model id. Access tokens refresh automatically, the loader retries once after a `401`, and refreshes are coordinated through opencode's live auth store so concurrent workspaces do not burn a stale refresh token from an old `OPENCODE_AUTH_CONTENT` snapshot.
 
 ### Use
 
@@ -136,6 +136,7 @@ This plugin exists to bring the OAuth/device-flow `kimi-cli` path into opencode 
 - The seven `X-Msh-*` headers and a kimi-cli-shaped `User-Agent`.
 - `~/.kimi/device_id` shared with a locally-installed kimi-cli.
 - Tokens stored in opencode's auth store under a dedicated provider id, so the plugin and kimi-cli keep independent refresh-token chains and do not invalidate each other.
+- Live auth-store rereads plus a provider-scoped refresh lock, so concurrent opencode workspaces converge on the latest refresh-token chain instead of tripping `invalid_grant`.
 - Streaming, `reasoning_content` deltas, and tool-call schemas are handled upstream by `@ai-sdk/openai-compatible` — not reimplemented here.
 
 </details>
@@ -168,7 +169,7 @@ Effort-to-field mapping used by the plugin:
 | Path | Purpose |
 |---|---|
 | `~/.kimi/device_id` | Stable UUID used in `X-Msh-Device-Id`. Shared with kimi-cli. |
-| opencode auth store (`auth.json` in opencode's XDG data dir; on Linux typically `~/.local/share/opencode/auth.json`) | Token storage, managed by opencode through `client.auth.*`. |
+| opencode auth store (`auth.json` in opencode's XDG data dir; on Linux typically `~/.local/share/opencode/auth.json`) | Token storage, managed by opencode through `client.auth.*`; the plugin also live-reads this entry to avoid stale workspace auth snapshots during refresh. |
 
 No other state is persisted. Credentials are never written to `~/.kimi/credentials/`; that path belongs to kimi-cli, and sharing it would cause refresh-token races between the two clients.
 

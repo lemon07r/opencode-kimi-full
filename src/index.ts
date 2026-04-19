@@ -1,3 +1,6 @@
+import fs from "node:fs/promises"
+import os from "node:os"
+import path from "node:path"
 import type { Plugin } from "@opencode-ai/plugin"
 import { MODEL_ID, PROVIDER_ID, REFRESH_SAFETY_WINDOW_MS } from "./constants.ts"
 import { kimiHeaders } from "./headers.ts"
@@ -54,6 +57,13 @@ type KimiHookInput = {
 const INTERNAL_PROMPT_CACHE_KEY_HEADER = "x-opencode-kimi-prompt-cache-key"
 const INTERNAL_REASONING_EFFORT_HEADER = "x-opencode-kimi-reasoning-effort"
 const INTERNAL_THINKING_TYPE_HEADER = "x-opencode-kimi-thinking-type"
+const REFRESH_LOCK_WAIT_MS = 15_000
+const REFRESH_LOCK_POLL_MS = 100
+const REFRESH_LOCK_STALE_MS = 120_000
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
 
 function isOAuthAuth(value: unknown): value is OAuthAuth {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false
@@ -69,6 +79,96 @@ function isOAuthAuth(value: unknown): value is OAuthAuth {
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return
   return value as Record<string, unknown>
+}
+
+function authStoreCandidates() {
+  const home = os.homedir()
+  if (process.env.XDG_DATA_HOME) {
+    return [path.join(process.env.XDG_DATA_HOME, "opencode", "auth.json")]
+  }
+  const candidates = new Set<string>()
+  candidates.add(path.join(home, ".local", "share", "opencode", "auth.json"))
+  if (process.platform === "darwin") {
+    candidates.add(path.join(home, "Library", "Application Support", "opencode", "auth.json"))
+  }
+  if (process.platform === "win32") {
+    const local = process.env.LOCALAPPDATA ?? path.join(home, "AppData", "Local")
+    candidates.add(path.join(local, "opencode", "auth.json"))
+    if (process.env.APPDATA) {
+      candidates.add(path.join(process.env.APPDATA, "opencode", "auth.json"))
+    }
+  }
+  return [...candidates]
+}
+
+async function resolveAuthStorePath() {
+  const candidates = authStoreCandidates()
+  for (const file of candidates) {
+    try {
+      await fs.access(file)
+      return file
+    } catch {}
+  }
+  return candidates[0]!
+}
+
+async function readAuthStoreEntry() {
+  for (const file of authStoreCandidates()) {
+    try {
+      const parsed = JSON.parse(await fs.readFile(file, "utf8")) as Record<string, unknown>
+      const entry = parsed[PROVIDER_ID] ?? parsed[`${PROVIDER_ID}/`]
+      if (isOAuthAuth(entry)) return entry
+    } catch {}
+  }
+  return
+}
+
+function sameAuth(left: OAuthAuth, right: OAuthAuth) {
+  return left.access === right.access && left.refresh === right.refresh && left.expires === right.expires
+}
+
+function withInvalidGrantHint(error: unknown) {
+  if (!(error instanceof Error) || !/invalid_grant/.test(error.message)) return error
+  const next = new Error(
+    `${error.message}. The token may have been rotated or revoked in another opencode session — run \`opencode auth login kimi-for-coding-oauth\` again if it does not self-heal.`,
+  ) as Error & { code?: string; status?: number }
+  next.code = (error as Error & { code?: string }).code
+  next.status = (error as Error & { status?: number }).status
+  return next
+}
+
+async function withRefreshLock<T>(work: () => Promise<T>) {
+  const authFile = await resolveAuthStorePath()
+  const lockDir = `${authFile}.${PROVIDER_ID}.refresh.lock`
+  await fs.mkdir(path.dirname(lockDir), { recursive: true })
+  const deadline = Date.now() + REFRESH_LOCK_WAIT_MS
+
+  while (true) {
+    try {
+      await fs.mkdir(lockDir)
+      break
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      if (code !== "EEXIST") throw error
+      try {
+        const stat = await fs.stat(lockDir)
+        if (Date.now() - stat.mtimeMs > REFRESH_LOCK_STALE_MS) {
+          await fs.rm(lockDir, { recursive: true, force: true })
+          continue
+        }
+      } catch {}
+      if (Date.now() >= deadline) {
+        throw new Error("kimi oauth: timed out waiting for the auth refresh lock")
+      }
+      await sleep(REFRESH_LOCK_POLL_MS)
+    }
+  }
+
+  try {
+    return await work()
+  } finally {
+    await fs.rm(lockDir, { recursive: true, force: true }).catch(() => undefined)
+  }
 }
 
 function asThinking(value: unknown): KimiBodyFields["thinking"] | undefined {
@@ -220,7 +320,9 @@ function buildConfigBlock(info: { model_id: string; display?: string }) {
  * Responsibilities, in order of execution:
  *   1. `auth`    — register device-flow OAuth login under the
  *                  `kimi-for-coding-oauth` provider id. opencode persists the returned tokens in its
- *                  own auth.json; we never touch disk for credentials.
+ *                  own auth.json; the plugin also live-reads that file so
+ *                  workspace auth snapshots do not strand stale refresh
+ *                  tokens.
  *   2. `loader`  — runs every time opencode instantiates the provider. Returns
  *                  a custom `fetch` that (a) refreshes the access token when
  *                  it is about to expire, (b) injects the seven X-Msh-* / UA
@@ -245,8 +347,19 @@ const plugin: Plugin = async ({ client }) => {
   let cachedDiscovery: ModelDiscovery = {}
   let refreshPromise: Promise<OAuthAuth> | undefined
 
+  const syncProcessAuthContent = (auth: OAuthAuth) => {
+    if (!process.env.OPENCODE_AUTH_CONTENT) return
+    try {
+      const parsed = JSON.parse(process.env.OPENCODE_AUTH_CONTENT) as Record<string, unknown>
+      delete parsed[`${PROVIDER_ID}/`]
+      parsed[PROVIDER_ID] = auth
+      process.env.OPENCODE_AUTH_CONTENT = JSON.stringify(parsed)
+    } catch {}
+  }
+
   const persistAuth = async (auth: OAuthAuth) => {
     await client.auth.set({ path: { id: PROVIDER_ID }, body: auth })
+    syncProcessAuthContent(auth)
   }
 
   const isExpiring = (auth: OAuthAuth) => auth.expires - Date.now() < REFRESH_SAFETY_WINDOW_MS
@@ -256,22 +369,52 @@ const plugin: Plugin = async ({ client }) => {
     return cachedDiscovery
   }
 
-  const refreshAuth = async (auth: OAuthAuth) => {
+  const readLiveAuth = async () => {
+    const auth = await readAuthStoreEntry()
+    if (auth) syncProcessAuthContent(auth)
+    return auth
+  }
+
+  const readCurrentAuth = async (readAuth?: () => Promise<unknown>) => {
+    const live = await readLiveAuth()
+    if (live) return live
+    if (!readAuth) return
+    const current = await readAuth()
+    if (!isOAuthAuth(current)) return
+    syncProcessAuthContent(current)
+    return current
+  }
+
+  const refreshAuth = async (auth: OAuthAuth, force = false) => {
     // opencode can ask both `provider.models` and `loader.fetch` to refresh
-    // around the same time. Serialize those calls so one refresh token does
-    // not fan out into multiple concurrent refresh exchanges.
+    // around the same time, including from separate workspace processes that
+    // only inherited a stale `OPENCODE_AUTH_CONTENT` snapshot. Serialize
+    // refreshes through a lock and re-read opencode's live auth store before
+    // spending the refresh token.
     if (refreshPromise) return refreshPromise
     refreshPromise = (async () => {
       try {
-        const tokens = await refreshToken(auth.refresh)
-        const next: OAuthAuth = {
-          type: "oauth",
-          refresh: tokens.refresh_token,
-          access: tokens.access_token,
-          expires: Date.now() + tokens.expires_in * 1000,
-        }
-        await persistAuth(next)
-        return next
+        return await withRefreshLock(async () => {
+          const latest = await readLiveAuth()
+          const current = latest ?? auth
+          if (latest && !sameAuth(latest, auth) && !force && !isExpiring(latest)) return latest
+          if (!force && !isExpiring(current)) return current
+          try {
+            const tokens = await refreshToken(current.refresh)
+            const next: OAuthAuth = {
+              type: "oauth",
+              refresh: tokens.refresh_token,
+              access: tokens.access_token,
+              expires: Date.now() + tokens.expires_in * 1000,
+            }
+            await persistAuth(next)
+            return next
+          } catch (error) {
+            const newest = await readLiveAuth()
+            if (newest && !sameAuth(newest, current)) return newest
+            throw withInvalidGrantHint(error)
+          }
+        })
       } finally {
         refreshPromise = undefined
       }
@@ -290,7 +433,7 @@ const plugin: Plugin = async ({ client }) => {
         const discover = async (auth: OAuthAuth) =>
           applyDiscoveryToModels(provider.models, rememberDiscovery(pickModelInfo(await listModels(auth.access))))
 
-        const current = ctx.auth
+        const current = (await readCurrentAuth()) ?? ctx.auth
         let auth = current
         try {
           if (isExpiring(auth)) auth = await refreshAuth(auth)
@@ -300,7 +443,7 @@ const plugin: Plugin = async ({ client }) => {
         }
 
         try {
-          return await discover(await refreshAuth(current))
+          return await discover(await refreshAuth(current, true))
         } catch {
           return provider.models
         }
@@ -315,9 +458,11 @@ const plugin: Plugin = async ({ client }) => {
        * and header concerns so no other hook has to worry about them.
        *
        * `readAuth` comes from opencode: it returns the currently persisted
-       * credentials for this provider id (opencode's `auth.json`). The SDK
-       * client intentionally does not expose a `get` — reading is scoped to
-       * this loader callback. Writes still go through `client.auth.set`.
+       * credentials for this provider id. opencode workspace processes may
+       * hydrate that from a stale `OPENCODE_AUTH_CONTENT` snapshot, so the
+       * loader prefers the live auth.json entry on disk and only falls back to
+       * `readAuth` when the file is absent. Writes still go through
+       * `client.auth.set`.
        */
       loader: async (readAuth) => {
         let discovery: ModelDiscovery = cachedDiscovery
@@ -349,13 +494,13 @@ const plugin: Plugin = async ({ client }) => {
         }
 
         const ensureFresh = async (force = false): Promise<OAuthAuth & ModelDiscovery> => {
-          const current = (await readAuth()) as (OAuthAuth & Partial<ModelDiscovery>) | undefined
+          const current = (await readCurrentAuth(readAuth)) as (OAuthAuth & Partial<ModelDiscovery>) | undefined
           if (!current || current.type !== "oauth")
             throw new Error(
               "kimi-for-coding-oauth: not logged in — run `opencode auth login kimi-for-coding-oauth`",
             )
           if (!force && !isExpiring(current)) return ensureDiscovered(current)
-          const next = await refreshAuth(current)
+          const next = await refreshAuth(current, force)
           // kimi-cli re-runs `refresh_managed_models` on every successful
           // refresh — we mirror that so entitlement changes (e.g. an
           // account gaining/losing K2.6 access) are picked up without a
