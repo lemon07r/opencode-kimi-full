@@ -17,6 +17,13 @@ Contributor and agent documentation lives in [`AGENTS.md`](./AGENTS.md).
 
 ---
 
+### Quick Start
+
+1. Install the plugin: `opencode plugin opencode-kimi-full --global`
+2. Paste the provider block from [Configure](#configure) into your opencode config.
+3. Run `opencode auth login -p kimi-for-coding-oauth` and approve the device flow in your browser.
+4. Select `kimi-for-coding-oauth/kimi-for-coding` in opencode.
+
 ### Requirements
 
 - `opencode` ≥ 1.4.6
@@ -55,7 +62,7 @@ Point the `plugin` entry at the repo root instead of the npm package name:
 
 ### Configure
 
-After the plugin is installed, add a provider entry in `~/.config/opencode/opencode.json` or `.opencode/opencode.json`:
+After the plugin is installed, paste this provider entry into `~/.config/opencode/opencode.json` or `.opencode/opencode.json`:
 
 ```json
 {
@@ -87,7 +94,7 @@ After the plugin is installed, add a provider entry in `~/.config/opencode/openc
 }
 ```
 
-Two identifiers are load-bearing:
+Use these two ids exactly as written:
 
 - **provider id** `kimi-for-coding-oauth` — the plugin's `auth` and `chat.params` hooks match on it.
 - **model id** `kimi-for-coding` — a stable opencode-side alias. At login and on every token refresh the plugin queries `/coding/v1/models` and rewrites the wire `model` field if the server reports a different slug for your account.
@@ -100,7 +107,27 @@ Two identifiers are load-bearing:
 opencode auth login -p kimi-for-coding-oauth
 ```
 
-The plugin returns a verification URL and user code. After browser approval it polls the device-auth endpoint, queries `/coding/v1/models` to discover the current model id and context length for your account, prints a ready-to-paste config snippet, and stores the token in opencode's auth store. The authorization message still includes the discovered context length; the snippet intentionally omits `limit` because opencode's schema requires `limit.output` too, and Kimi's models endpoint only exposes `context_length`. Model discovery runs again on every token refresh, and a fresh loader instance will re-query `/coding/v1/models` on first use if it needs the current wire model id. Access tokens refresh automatically, the loader retries once after a `401`, and refreshes are coordinated through opencode's live auth store so concurrent workspaces do not burn a stale refresh token from an old `OPENCODE_AUTH_CONTENT` snapshot.
+Then complete the device-flow approval in your browser.
+
+During login the plugin:
+
+- shows a verification URL and user code
+- stores the OAuth token in opencode's auth store
+- discovers the exact model slug your account should send to Kimi
+- prints a config hint with the discovered context length
+
+Access tokens refresh automatically while you use the model.
+
+<details>
+<summary><strong>Login and refresh details</strong></summary>
+
+- The plugin queries `/coding/v1/models` during login so it can discover the current wire model id and context length for your account.
+- The printed config hint intentionally omits `limit`, because opencode requires both `limit.context` and `limit.output`, while Kimi's models endpoint only exposes `context_length`.
+- Model discovery runs again on every token refresh, and a fresh loader instance can re-query `/coding/v1/models` on first use if it needs the current wire model id.
+- On a `401`, the loader refreshes the access token once and retries the request once.
+- Refreshes are coordinated through opencode's live auth store so concurrent workspaces do not keep using an older refresh-token chain from a stale `OPENCODE_AUTH_CONTENT` snapshot.
+
+</details>
 
 ### Use
 
