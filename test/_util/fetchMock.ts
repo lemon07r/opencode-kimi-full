@@ -9,10 +9,12 @@ export type FetchCall = {
   body: string | undefined
 }
 
+type MaybePromise<T> = T | Promise<T>
+
 export type Responder = (
   call: FetchCall,
   callIndex: number,
-) => { status?: number; body?: unknown; bodyText?: string }
+) => MaybePromise<{ status?: number; body?: unknown; bodyText?: string }>
 
 export function installFetchMock(responder: Responder) {
   const calls: FetchCall[] = []
@@ -41,7 +43,7 @@ export function installFetchMock(responder: Responder) {
             : String(init.body)
     const call: FetchCall = { url, method: (init?.method ?? request?.method ?? "GET").toUpperCase(), headers, body }
     calls.push(call)
-    const r = responder(call, calls.length - 1)
+    const r = await responder(call, calls.length - 1)
     const status = r.status ?? 200
     const text = r.bodyText ?? (r.body === undefined ? "" : JSON.stringify(r.body))
     return new Response(text, {

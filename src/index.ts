@@ -243,6 +243,7 @@ const plugin: Plugin = async ({ client }) => {
   // --- helpers ---------------------------------------------------------------
 
   let cachedDiscovery: ModelDiscovery = {}
+  let refreshPromise: Promise<OAuthAuth> | undefined
 
   const persistAuth = async (auth: OAuthAuth) => {
     await client.auth.set({ path: { id: PROVIDER_ID }, body: auth })
@@ -256,15 +257,26 @@ const plugin: Plugin = async ({ client }) => {
   }
 
   const refreshAuth = async (auth: OAuthAuth) => {
-    const tokens = await refreshToken(auth.refresh)
-    const next: OAuthAuth = {
-      type: "oauth",
-      refresh: tokens.refresh_token,
-      access: tokens.access_token,
-      expires: Date.now() + tokens.expires_in * 1000,
-    }
-    await persistAuth(next)
-    return next
+    // opencode can ask both `provider.models` and `loader.fetch` to refresh
+    // around the same time. Serialize those calls so one refresh token does
+    // not fan out into multiple concurrent refresh exchanges.
+    if (refreshPromise) return refreshPromise
+    refreshPromise = (async () => {
+      try {
+        const tokens = await refreshToken(auth.refresh)
+        const next: OAuthAuth = {
+          type: "oauth",
+          refresh: tokens.refresh_token,
+          access: tokens.access_token,
+          expires: Date.now() + tokens.expires_in * 1000,
+        }
+        await persistAuth(next)
+        return next
+      } finally {
+        refreshPromise = undefined
+      }
+    })()
+    return refreshPromise
   }
 
   // --- return hooks ----------------------------------------------------------

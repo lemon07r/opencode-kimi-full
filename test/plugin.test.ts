@@ -239,6 +239,16 @@ async function getLoaderFetch(readAuth: () => Promise<unknown>) {
   return { fetch: (res as { fetch: typeof fetch }).fetch, apiKey: (res as { apiKey: string }).apiKey, writes }
 }
 
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res
+    reject = rej
+  })
+  return { promise, resolve, reject }
+}
+
 function makeProviderState(context = 0) {
   return {
     id: PROVIDER_ID,
@@ -482,6 +492,73 @@ test("auth.loader: refreshes when expiry is within safety window", async () => {
   expect(persisted.model_id).toBeUndefined()
   expect(persisted.context_length).toBeUndefined()
   expect(reads).toBeGreaterThan(0)
+})
+
+test("auth.loader: concurrent expiring requests share one refresh exchange", async () => {
+  const gate = deferred<void>()
+  mock = installFetchMock(async (call) => {
+    if (call.url.includes("/oauth/token")) {
+      await gate.promise
+      return { body: { access_token: "access-2", refresh_token: "refresh-2", token_type: "Bearer", expires_in: 900 } }
+    }
+    if (call.url.endsWith("/coding/v1/models")) {
+      return { body: { data: [{ id: MODEL_ID, context_length: 262144 }] } }
+    }
+    return { body: { ok: true } }
+  })
+  const expiring = validAuth({ access: "stale", expires: Date.now() + REFRESH_SAFETY_WINDOW_MS / 2 })
+  const { fetch: f, writes } = await getLoaderFetch(async () => expiring)
+  const request = {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model: MODEL_ID, messages: [] }),
+  }
+
+  const p1 = f("https://api.kimi.com/coding/v1/chat/completions", request)
+  const p2 = f("https://api.kimi.com/coding/v1/chat/completions", request)
+  await new Promise((r) => setTimeout(r, 0))
+  gate.resolve()
+  await Promise.all([p1, p2])
+
+  expect(mock.calls.filter((c) => c.url.includes("/oauth/token"))).toHaveLength(1)
+  expect(mock.calls.filter((c) => c.url.endsWith("/coding/v1/chat/completions"))).toHaveLength(2)
+  expect(mock.calls.filter((c) => c.url.endsWith("/coding/v1/chat/completions")).map((c) => c.headers["authorization"])).toEqual([
+    "Bearer access-2",
+    "Bearer access-2",
+  ])
+  expect(writes).toHaveLength(1)
+})
+
+test("provider.models and auth.loader share one in-flight refresh exchange", async () => {
+  const gate = deferred<void>()
+  mock = installFetchMock(async (call) => {
+    if (call.url.includes("/oauth/token")) {
+      await gate.promise
+      return { body: { access_token: "fresh", refresh_token: "refresh-2", token_type: "Bearer", expires_in: 900 } }
+    }
+    if (call.url.endsWith("/coding/v1/models")) {
+      return { body: { data: [{ id: MODEL_ID, context_length: 131072 }] } }
+    }
+    return { body: { ok: true } }
+  })
+  const { hooks, writes } = await getHooks()
+  const expiring = validAuth({ access: "stale", expires: Date.now() + REFRESH_SAFETY_WINDOW_MS / 2 })
+  const provider = makeProviderState()
+  const loader = (await hooks.auth!.loader!(async () => expiring, {} as any)) as { fetch: typeof fetch }
+
+  const modelsPromise = hooks.provider!.models!(provider as any, { auth: expiring } as any)
+  const fetchPromise = loader.fetch("https://api.kimi.com/coding/v1/chat/completions", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model: MODEL_ID, messages: [] }),
+  })
+  await new Promise((r) => setTimeout(r, 0))
+  gate.resolve()
+  const [models] = await Promise.all([modelsPromise, fetchPromise])
+
+  expect(mock.calls.filter((c) => c.url.includes("/oauth/token"))).toHaveLength(1)
+  expect((models as Record<string, { limit?: { context?: number } }>)[MODEL_ID]!.limit?.context).toBe(131072)
+  expect(writes).toHaveLength(1)
 })
 
 test("auth.loader: prefers the canonical MODEL_ID slug when /models returns multiple", async () => {
