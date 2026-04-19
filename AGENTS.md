@@ -99,6 +99,7 @@ Offline:
 
 ```sh
 bunx tsc --noEmit                                  # type-check
+bunx tsc --noEmit --project tsconfig.tests.json    # type-check tests/helpers
 bun build --target=node --no-bundle src/index.ts   # syntax check
 bun test                                           # offline unit tests
 ```

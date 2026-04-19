@@ -27,6 +27,9 @@ export type TokenResponse = {
 
 const REFRESH_RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504])
 const REFRESH_MAX_RETRIES = 3
+// Mirror kimi-cli's default aiohttp session timeout
+// (research/kimi-cli/src/kimi_cli/utils/aiohttp.py).
+const REQUEST_TIMEOUT_MS = 120_000
 
 function formBody(params: Record<string, string>): string {
   return new URLSearchParams(params).toString()
@@ -41,6 +44,7 @@ async function postForm<T>(url: string, params: Record<string, string>): Promise
       Accept: "application/json",
     },
     body: formBody(params),
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   })
   const text = await res.text()
   let json: any
@@ -73,7 +77,7 @@ export async function startDeviceAuth(): Promise<DeviceAuth> {
  * and `slow_down` per RFC 8628.
  */
 export async function pollDeviceToken(device: DeviceAuth): Promise<TokenResponse> {
-  let interval = Math.max(1, device.interval || 5) * 1000
+  let interval = Math.max(1, device.interval ?? 5) * 1000
   const deadline = Date.now() + device.expires_in * 1000
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, interval))
@@ -113,6 +117,7 @@ export async function refreshToken(refresh: string): Promise<TokenResponse> {
           refresh_token: refresh,
           grant_type: OAUTH_REFRESH_GRANT,
         }),
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       })
       const text = await res.text()
       let json: any = {}
@@ -196,6 +201,7 @@ export async function listModels(accessToken: string): Promise<KimiModelInfo[]> 
       Authorization: `Bearer ${accessToken}`,
       Accept: "application/json",
     },
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   })
   const text = await res.text()
   if (!res.ok) {

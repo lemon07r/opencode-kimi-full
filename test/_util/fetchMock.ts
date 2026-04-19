@@ -7,6 +7,7 @@ export type FetchCall = {
   method: string
   headers: Record<string, string>
   body: string | undefined
+  hasSignal: boolean
 }
 
 type MaybePromise<T> = T | Promise<T>
@@ -41,7 +42,13 @@ export function installFetchMock(responder: Responder) {
           : init?.body == null
             ? undefined
             : String(init.body)
-    const call: FetchCall = { url, method: (init?.method ?? request?.method ?? "GET").toUpperCase(), headers, body }
+    const call: FetchCall = {
+      url,
+      method: (init?.method ?? request?.method ?? "GET").toUpperCase(),
+      headers,
+      body,
+      hasSignal: init?.signal != null || request?.signal != null,
+    }
     calls.push(call)
     const r = await responder(call, calls.length - 1)
     const status = r.status ?? 200

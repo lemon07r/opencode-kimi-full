@@ -37,6 +37,7 @@ test("startDeviceAuth posts client_id+scope as form-encoded to the device endpoi
   const call = mock.calls[0]!
   expect(call.url).toBe(OAUTH_DEVICE_AUTH_URL)
   expect(call.method).toBe("POST")
+  expect(call.hasSignal).toBe(true)
   expect(call.headers["content-type"]).toBe("application/x-www-form-urlencoded")
   // Fingerprint headers must be present on every oauth call, not just chat.
   expect(call.headers["x-msh-version"]).toBeDefined()
@@ -55,6 +56,7 @@ test("refreshToken posts grant_type=refresh_token and returns normalized shape",
   expect(t).toEqual({ access_token: "a2", refresh_token: "r2", token_type: "Bearer", expires_in: 900 })
   const call = mock.calls[0]!
   expect(call.url).toBe(OAUTH_TOKEN_URL)
+  expect(call.hasSignal).toBe(true)
   expect(parseForm(call.body)).toEqual({
     client_id: OAUTH_CLIENT_ID,
     refresh_token: "r1",
@@ -86,7 +88,7 @@ test("refreshToken throws a clear error when a non-retryable response is non-JSO
 })
 
 test("pollDeviceToken honors authorization_pending and returns on approval", async () => {
-  // pollDeviceToken clamps with `device.interval || 5` then max(1, …)*1000,
+  // pollDeviceToken clamps with `device.interval ?? 5` then max(1, …)*1000,
   // so the effective poll wait is max(1, interval) seconds. Use interval=1
   // and a single pending cycle to keep the test ~2s.
   const device = {
@@ -103,6 +105,7 @@ test("pollDeviceToken honors authorization_pending and returns on approval", asy
   const t = await pollDeviceToken(device)
   expect(t.access_token).toBe("A")
   expect(mock.calls).toHaveLength(2)
+  expect(mock.calls[0]!.hasSignal).toBe(true)
   // Sends device_code + the RFC 8628 grant type.
   expect(parseForm(mock.calls[0]!.body)).toEqual({
     client_id: OAUTH_CLIENT_ID,

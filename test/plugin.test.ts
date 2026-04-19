@@ -80,25 +80,11 @@ const INTERNAL_PROMPT_CACHE_KEY_HEADER = "x-opencode-kimi-prompt-cache-key"
 const INTERNAL_REASONING_EFFORT_HEADER = "x-opencode-kimi-reasoning-effort"
 const INTERNAL_THINKING_TYPE_HEADER = "x-opencode-kimi-thinking-type"
 
-// Minimal shape for the chat hook input/output we care about. Mirrors the
-// runtime shape opencode actually passes (see
-// research/opencode/packages/opencode/src/session/llm.ts::stream — `model`
-// has `.providerID`, `.id`, `.options`, `.variants`; the selected variant
-// rides on `message.model.variant`).
-type HookInput = {
-  agent: string
-  provider: { id: string }
-  model: {
-    providerID: string
-    id: string
-    options?: Record<string, unknown>
-    variants?: Record<string, Record<string, unknown>>
-  }
-  message: { model: { variant?: string } }
-  sessionID: string
-}
-type ParamsOutput = { options: Record<string, unknown> }
-type HeadersOutput = { headers: Record<string, string> }
+type Hooks = Awaited<ReturnType<typeof plugin>>
+type ChatParamsHook = NonNullable<Hooks["chat.params"]>
+type ChatHeadersHook = NonNullable<Hooks["chat.headers"]>
+type ParamsOutput = Parameters<ChatParamsHook>[1]
+type HeadersOutput = Parameters<ChatHeadersHook>[1]
 
 type HookInputOptions = {
   providerID?: string
@@ -109,7 +95,7 @@ type HookInputOptions = {
   variant?: string
 }
 
-function makeHookInput(options: HookInputOptions = {}): HookInput {
+function makeHookInput(options: HookInputOptions = {}) {
   const providerID = options.providerID ?? PROVIDER_ID
   return {
     agent: "test-agent",
@@ -129,28 +115,36 @@ function makeHookInput(options: HookInputOptions = {}): HookInput {
   }
 }
 
-function callParams(
-  hook: (i: HookInput, o: ParamsOutput) => Promise<void> | void,
+async function callParams(
+  hook: ChatParamsHook,
   input: HookInputOptions = {},
   options: Record<string, unknown> = {},
 ) {
-  const output: ParamsOutput = { options: { ...options } }
-  const res = hook(makeHookInput(input), output)
-  return { res, output }
+  const output: ParamsOutput = {
+    temperature: 0,
+    topP: 1,
+    topK: 0,
+    maxOutputTokens: undefined,
+    options: { ...options },
+  }
+  await hook(makeHookInput(input) as any, output)
+  return { output }
 }
 
-function callHeaders(hook: (i: HookInput, o: HeadersOutput) => Promise<void> | void, input: HookInputOptions = {}) {
+async function callHeaders(hook: ChatHeadersHook, input: HookInputOptions = {}) {
   const output: HeadersOutput = { headers: {} }
-  const res = hook(makeHookInput(input), output)
-  return { res, output }
+  await hook(makeHookInput(input) as any, output)
+  return { output }
 }
 
 test("chat.params: no-op for other providers (AGENTS.md rule: gated on PROVIDER_ID)", async () => {
   const { hooks } = await getHooks()
   const hook = hooks["chat.params"]!
-  const { output } = callParams(hook, { providerID: "some-other-provider", modelOptions: { reasoning_effort: "high" } }, {
-    reasoning_effort: "high",
-  })
+  const { output } = await callParams(
+    hook,
+    { providerID: "some-other-provider", modelOptions: { reasoning_effort: "high" } },
+    { reasoning_effort: "high" },
+  )
   // Untouched — no prompt_cache_key, no thinking added.
   expect(output.options).toEqual({ reasoning_effort: "high" })
 })
@@ -158,7 +152,7 @@ test("chat.params: no-op for other providers (AGENTS.md rule: gated on PROVIDER_
 test("chat.params: no-op for other models under our provider (rule 5 gating)", async () => {
   const { hooks } = await getHooks()
   const hook = hooks["chat.params"]!
-  const { output } = callParams(hook, { modelID: "kimi-something-else" })
+  const { output } = await callParams(hook, { modelID: "kimi-something-else" })
   expect(output.options.prompt_cache_key).toBeUndefined()
   expect(output.options.thinking).toBeUndefined()
 })
@@ -320,6 +314,7 @@ test("provider.models: fills limit.context from discovery when config still has 
   const { hooks, writes } = await getHooks()
   const provider = makeProviderState()
   const next = await hooks.provider!.models!(provider as any, { auth: validAuth() } as any)
+  expect(mock.calls[0]!.hasSignal).toBe(true)
   expect(next[MODEL_ID]!.limit?.context).toBe(262144)
   expect(next["some-other-model"]!.limit?.context).toBe(1234)
   expect(provider.models[MODEL_ID]!.limit?.context).toBe(0)

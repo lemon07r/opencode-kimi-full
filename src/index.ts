@@ -2,7 +2,7 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import type { Plugin } from "@opencode-ai/plugin"
-import { MODEL_ID, PROVIDER_ID, REFRESH_SAFETY_WINDOW_MS } from "./constants.ts"
+import { API_BASE_URL, MODEL_ID, PROVIDER_ID, REFRESH_SAFETY_WINDOW_MS } from "./constants.ts"
 import { kimiHeaders } from "./headers.ts"
 import { type KimiModelInfo, listModels, pollDeviceToken, refreshToken, startDeviceAuth } from "./oauth.ts"
 
@@ -291,7 +291,7 @@ function buildConfigBlock(info: { model_id: string; display?: string }) {
         [PROVIDER_ID]: {
           npm: "@ai-sdk/openai-compatible",
           name: "Kimi For Coding (OAuth)",
-          options: { baseURL: "https://api.kimi.com/coding/v1" },
+          options: { baseURL: API_BASE_URL },
           models: {
             [MODEL_ID]: {
               name,
