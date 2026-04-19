@@ -692,7 +692,7 @@ test("auth.methods[0].authorize returns URL + instructions + async callback", as
   expect(typeof cb.expires).toBe("number")
 })
 
-test("auth callback prints a config snippet with top-level model variants", async () => {
+test("auth callback prints a schema-valid config snippet with top-level model variants", async () => {
   mock = installFetchMock((call) => {
     if (call.url.includes("device_authorization")) {
       return {
@@ -744,7 +744,8 @@ test("auth callback prints a config snippet with top-level model variants", asyn
     }
   }
   const model = parsed.provider[PROVIDER_ID]!.models[MODEL_ID]!
-  expect(model.limit?.context).toBe(262144)
+  expect(text).toContain("context 262144")
+  expect(model.limit).toBeUndefined()
   expect(model.options).toEqual({})
   expect(model.variants?.off).toEqual({ reasoning_effort: "off" })
   expect(model.variants?.auto).toEqual({ reasoning_effort: "auto" })

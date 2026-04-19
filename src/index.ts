@@ -174,13 +174,17 @@ function applyDiscoveryToModels<T extends Record<string, ModelWithContextLimit>>
   }
 }
 
-function buildConfigBlock(info: { model_id: string; context_length?: number; display?: string }) {
+function buildConfigBlock(info: { model_id: string; display?: string }) {
   const name = info.display ?? "Kimi For Coding"
-  const ctx = info.context_length ?? 0
   // The opencode-side model key is always MODEL_ID ("kimi-for-coding"); the
   // plugin rewrites the wire `model` body field to `info.model_id` inside
   // `loader.fetch`. This way both K2.5 and K2.6 users paste identical
   // config — only the wire request differs.
+  //
+  // Intentionally omit `limit`: opencode's config schema requires
+  // `limit.output` whenever a `limit` object is present, but Kimi's
+  // `/coding/v1/models` discovery only tells us `context_length`. The
+  // provider.models hook backfills `limit.context` at runtime.
   return JSON.stringify(
     {
       provider: {
@@ -193,7 +197,6 @@ function buildConfigBlock(info: { model_id: string; context_length?: number; dis
               name,
               reasoning: true,
               options: {},
-              ...(ctx > 0 ? { limit: { context: ctx } } : {}),
               variants: {
                 off: { reasoning_effort: "off" },
                 auto: { reasoning_effort: "auto" },
@@ -462,7 +465,6 @@ const plugin: Plugin = async ({ client }) => {
                       // this next to the "Authorized" message.
                       const block = buildConfigBlock({
                         model_id: discovered.model_id,
-                        context_length: discovered.context_length,
                         display: discovered.model_display,
                       })
                       console.log(
