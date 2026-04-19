@@ -112,6 +112,14 @@ The default variant-cycle keybind is **Ctrl+T**. The variants map as follows:
 - `auto` → omits both `thinking` and `reasoning_effort`
 - `low` / `medium` / `high` → send `thinking: { "type": "enabled" }` plus the matching `reasoning_effort`
 
+These variants only affect Kimi's reasoning request fields. They do not switch models or auth paths. In practice:
+
+- `off` asks the backend to disable thinking
+- `auto` leaves the decision to the server
+- `low` / `medium` / `high` ask for enabled thinking with the corresponding reasoning effort
+
+The exact behavioral difference between `low`, `medium`, and `high` is controlled by Kimi's backend, so this should be read as a server hint rather than a guaranteed latency/quality ladder.
+
 ---
 
 <details>
@@ -142,13 +150,15 @@ This plugin exists to bring the OAuth/device-flow `kimi-cli` path into opencode 
 | Seven `X-Msh-*` headers + UA | `User-Agent`, `X-Msh-Platform`, `X-Msh-Version`, `X-Msh-Device-Name`, `X-Msh-Device-Model`, `X-Msh-Device-Id`, `X-Msh-Os-Version` | Matches kimi-cli's `_kimi_default_headers()` at the pinned `KIMI_CLI_VERSION`. |
 | `~/.kimi/device_id` | UUID persisted on disk, embedded in `X-Msh-Device-Id` | Sends the same `X-Msh-Device-Id` as a locally-installed kimi-cli. |
 
-Effort-to-field mapping, taken verbatim from kimi-cli:
+Effort-to-field mapping used by the plugin:
 
 | user effort | `reasoning_effort` | `thinking` |
 |---|---|---|
 | `auto` | *(omitted)* | *(omitted)* — server picks dynamically |
 | `off` | *(omitted)* | `{ type: "disabled" }` |
 | `low` / `medium` / `high` | same string | `{ type: "enabled" }` |
+
+`kimi-cli` does not currently surface this as a separate user-facing level selector. The plugin exposes the same wire-level controls as opencode variants so you can choose them explicitly.
 
 </details>
 
