@@ -1,6 +1,6 @@
 ## opencode-kimi-full
 
-An [opencode](https://opencode.ai) plugin that adds a Kimi For Coding OAuth provider.
+An [opencode](https://opencode.ai) plugin that adds a Kimi For Coding OAuth provider and implements support for Kimi-specific extensions that are currently only used by Kimi CLI.
 
 This plugin:
 
