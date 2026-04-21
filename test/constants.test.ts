@@ -2,7 +2,7 @@ import { test, expect } from "bun:test"
 import * as C from "../src/constants.ts"
 
 // These values form the "identity" of the plugin on the wire. Typos silently
-// downgrade K2.6 → K2.5 (scope/client_id) or collide with models.dev
+// send requests down the wrong auth / backend path or collide with models.dev
 // (PROVIDER_ID). See AGENTS.md "Contracts to keep intact".
 
 test("KIMI_CLI_VERSION is a non-empty semver", () => {
@@ -19,7 +19,7 @@ test("USER_AGENT embeds KIMI_CLI_VERSION", () => {
 test("OAuth constants match upstream kimi-cli exactly", () => {
   // Pinned values from research/kimi-cli/src/kimi_cli/auth/oauth.py. If these
   // drift from upstream, tokens are issued against the wrong scope/client and
-  // the backend routes to K2.5.
+  // the plugin no longer mirrors official kimi-cli auth.
   expect(C.OAUTH_HOST).toBe("https://auth.kimi.com")
   expect(C.OAUTH_DEVICE_AUTH_URL).toBe("https://auth.kimi.com/api/oauth/device_authorization")
   expect(C.OAUTH_TOKEN_URL).toBe("https://auth.kimi.com/api/oauth/token")

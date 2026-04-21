@@ -321,6 +321,20 @@ test("provider.models: fills limit.context from discovery when config still has 
   expect(writes).toHaveLength(0)
 })
 
+test("provider.models: surfaces discovered display_name in runtime model metadata", async () => {
+  mock = installFetchMock((call) => {
+    if (call.url.endsWith("/coding/v1/models")) {
+      return { body: { data: [{ id: MODEL_ID, display_name: "Kimi Code", context_length: 262144 }] } }
+    }
+    return { body: { ok: true } }
+  })
+  const { hooks } = await getHooks()
+  const provider = makeProviderState()
+  const next = await hooks.provider!.models!(provider as any, { auth: validAuth() } as any)
+  expect(next[MODEL_ID]!.name).toBe("Kimi Code")
+  expect(provider.models[MODEL_ID]!.name).toBe("Kimi For Coding")
+})
+
 test("provider.models: preserves an explicit user context limit", async () => {
   mock = installFetchMock((call) => {
     if (call.url.endsWith("/coding/v1/models")) {
@@ -789,7 +803,7 @@ test("auth.loader: caches discovered model info for subsequent requests in the s
 
 test("auth.loader: rewrites wire `model` to the discovered server id (Option A)", async () => {
   // Persisted auth already carries a discovered model_id different from the
-  // opencode-side MODEL_ID placeholder — this is the K2.5 account case.
+  // opencode-side MODEL_ID placeholder — this is the alternate-slug case.
   const current = {
     ...validAuth(),
     model_id: "k2p5",
@@ -807,7 +821,7 @@ test("auth.loader: rewrites wire `model` to the discovered server id (Option A)"
   expect(sentBody.messages).toEqual([])
 })
 
-test("auth.loader: leaves body untouched when discovered id equals MODEL_ID (K2.6 case)", async () => {
+test("auth.loader: leaves body untouched when discovered id equals MODEL_ID", async () => {
   const current = { ...validAuth(), model_id: MODEL_ID } as unknown as ReturnType<typeof validAuth>
   mock = installFetchMock(() => ({ body: { ok: true } }))
   const { fetch: f } = await getLoaderFetch(async () => current)

@@ -1,13 +1,13 @@
-// Values mirror kimi-cli v1.35.0 1:1. When upstream bumps, update here and
+// Values mirror kimi-cli v1.37.0 1:1. When upstream bumps, update here and
 // nothing else in the codebase should hard-code these strings.
 //
 // Source of truth: research/kimi-cli/src/kimi_cli/constant.py,
 // research/kimi-cli/src/kimi_cli/auth/oauth.py
 //
 // NOTE: client_id is a public constant shipped inside the official CLI, not a
-// secret. scope `kimi-code` is what routes the issued JWT to K2.6.
+// secret. scope `kimi-code` is the upstream coding-agent OAuth scope.
 
-export const KIMI_CLI_VERSION = "1.35.0"
+export const KIMI_CLI_VERSION = "1.37.0"
 // Upstream: research/kimi-cli/src/kimi_cli/constant.py get_user_agent() →
 // f"KimiCLI/{get_version()}". This must match verbatim — Moonshot's
 // `kimi-for-coding` backend 403s on any other UA prefix
@@ -27,9 +27,9 @@ export const MODEL_ID = "kimi-for-coding"
 
 // Provider id the user must use in their opencode config. Intentionally NOT
 // "kimi-for-coding" — models.dev publishes an entry under that id (static
-// KIMI_API_KEY → K2.5 via @ai-sdk/anthropic), and sharing the id would surface
-// two auth methods under one `opencode auth login` entry and silently route
-// API-key users to the wrong backend. See AGENTS.md rule 7.
+// KIMI_API_KEY flow via a different SDK / auth shape), and sharing the id
+// would surface two auth methods under one `opencode auth login` entry and
+// silently route users onto the wrong integration path. See AGENTS.md rule 7.
 export const PROVIDER_ID = "kimi-for-coding-oauth"
 
 // Refresh a bit before the server-reported expiry so we never race it.

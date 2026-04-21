@@ -187,9 +187,9 @@ export type KimiModelInfo = {
 /**
  * Calls `GET {API_BASE_URL}/models` with the user's JWT and returns the
  * server's authoritative model list for this account. Different account
- * tiers see different slugs (K2.5 accounts may see `k2p5`, K2.6 accounts
- * see `kimi-for-coding`); the `id` and `context_length` here are the only
- * truth about what the user is actually entitled to.
+ * states may see different slugs; the `id`, `display_name`, and
+ * `context_length` here are the only truth about what the user is actually
+ * entitled to.
  *
  * kimi-cli calls this on login and on every successful token refresh
  * (see `refresh_managed_models` in platforms.py). We do the same.

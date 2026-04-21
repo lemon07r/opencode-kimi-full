@@ -33,7 +33,8 @@ type KimiBodyFields = {
   reasoning_effort?: string
 }
 
-type ModelWithContextLimit = {
+type ModelWithDiscoveryMetadata = {
+  name?: string
   limit?: {
     context?: number
   }
@@ -251,7 +252,7 @@ function pickModelInfo(models: KimiModelInfo[]): ModelDiscovery {
   }
 }
 
-function withDiscoveredContext<T extends ModelWithContextLimit>(model: T, contextLength: number | undefined): T {
+function withDiscoveredContext<T extends ModelWithDiscoveryMetadata>(model: T, contextLength: number | undefined): T {
   if (!contextLength || contextLength <= 0) return model
   if ((model.limit?.context ?? 0) > 0) return model
   return {
@@ -263,10 +264,18 @@ function withDiscoveredContext<T extends ModelWithContextLimit>(model: T, contex
   }
 }
 
-function applyDiscoveryToModels<T extends Record<string, ModelWithContextLimit>>(models: T, discovery: ModelDiscovery): T {
+function withDiscoveredDisplayName<T extends ModelWithDiscoveryMetadata>(model: T, displayName: string | undefined): T {
+  if (!displayName || model.name === displayName) return model
+  return {
+    ...model,
+    name: displayName,
+  }
+}
+
+function applyDiscoveryToModels<T extends Record<string, ModelWithDiscoveryMetadata>>(models: T, discovery: ModelDiscovery): T {
   const current = models[MODEL_ID]
   if (!current) return models
-  const next = withDiscoveredContext(current, discovery.context_length)
+  const next = withDiscoveredContext(withDiscoveredDisplayName(current, discovery.model_display), discovery.context_length)
   if (next === current) return models
   return {
     ...models,
@@ -278,8 +287,8 @@ function buildConfigBlock(info: { model_id: string; display?: string }) {
   const name = info.display ?? "Kimi For Coding"
   // The opencode-side model key is always MODEL_ID ("kimi-for-coding"); the
   // plugin rewrites the wire `model` body field to `info.model_id` inside
-  // `loader.fetch`. This way both K2.5 and K2.6 users paste identical
-  // config — only the wire request differs.
+  // `loader.fetch`. This way users paste identical config even if the
+  // server reports a different wire slug for their account.
   //
   // Intentionally omit `limit`: opencode's config schema requires
   // `limit.output` whenever a `limit` object is present, but Kimi's
@@ -330,9 +339,9 @@ function buildConfigBlock(info: { model_id: string; display?: string }) {
  *                  (c) lazily discovers the current wire model id from
  *                  `GET /coding/v1/models`, and (d) retries once with a forced
  *                  refresh on 401.
- *   3. `provider.models` — discovers `context_length` early enough to patch
- *                  opencode's model metadata when the user's config still has
- *                  the default zero context window.
+ *   3. `provider.models` — discovers `context_length` / `display_name` early
+ *                  enough to patch opencode's runtime model metadata when the
+ *                  user's config still has the default placeholder values.
  *   4. `chat.headers` — computes the Kimi-specific request body fields the
  *                  model actually needs (`thinking.type`,
  *                  `reasoning_effort`, `prompt_cache_key`) and passes them to
@@ -502,9 +511,9 @@ const plugin: Plugin = async ({ client }) => {
           if (!force && !isExpiring(current)) return ensureDiscovered(current)
           const next = await refreshAuth(current, force)
           // kimi-cli re-runs `refresh_managed_models` on every successful
-          // refresh — we mirror that so entitlement changes (e.g. an
-          // account gaining/losing K2.6 access) are picked up without a
-          // full re-login. Failures here must not block the refresh: a
+          // refresh — we mirror that so entitlement or display-name changes
+          // are picked up without a full re-login. Failures here must not
+          // block the refresh: a
           // warm in-memory discovery still works for the common case, and
           // the request-path 401 retry will flush a broken access token.
           try {
@@ -548,8 +557,8 @@ const plugin: Plugin = async ({ client }) => {
               //     our opencode-side placeholder MODEL_ID.
               // This way `input.model.id` stays `kimi-for-coding` in
               // opencode's UI/config, while Moonshot sees whatever its
-              // /models endpoint says for this account (e.g. `k2p5` on
-              // K2.5 tiers). Mirrors kimi-cli's behavior — it always sends
+              // /models endpoint says for this account (for example a
+              // non-default slug). Mirrors kimi-cli's behavior — it always sends
               // exactly the id it got back from `/models`.
               let newInit = init
               const targetModel = auth.model_id
