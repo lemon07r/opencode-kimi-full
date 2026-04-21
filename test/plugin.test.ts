@@ -74,6 +74,12 @@ async function getHooks() {
   return { hooks, writes }
 }
 
+test("plugin registers auth under PROVIDER_ID", async () => {
+  const { hooks } = await getHooks()
+  expect(hooks.auth?.provider).toBe(PROVIDER_ID)
+  expect(hooks.auth?.methods?.[0]?.label).toBe("Kimi Code (device flow)")
+})
+
 // ---------- chat hooks ------------------------------------------------------
 
 const INTERNAL_PROMPT_CACHE_KEY_HEADER = "x-opencode-kimi-prompt-cache-key"
