@@ -1,16 +1,19 @@
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import type { Plugin } from "@opencode-ai/plugin"
+import type { Plugin, PluginModule } from "@opencode-ai/plugin"
 import { API_BASE_URL, MODEL_ID, PROVIDER_ID, REFRESH_SAFETY_WINDOW_MS } from "./constants.ts"
 import { kimiHeaders } from "./headers.ts"
 import { type KimiModelInfo, listModels, pollDeviceToken, refreshToken, startDeviceAuth } from "./oauth.ts"
 
-// IMPORTANT: this module must have exactly ONE export — the default plugin
-// function. opencode's plugin loader (packages/opencode/src/plugin/index.ts →
-// getLegacyPlugins) iterates every export and throws "Plugin export is not a
-// function" if any named export is not a function. Keep constants in
-// constants.ts and import them here.
+// IMPORTANT: this module must have exactly ONE export — the default
+// PluginModule object. opencode's plugin loader detects the v1 format
+// ({ id, server }) via readV1Plugin *before* falling back to
+// getLegacyPlugins — which iterates every export and throws "Plugin export
+// is not a function" on any non-callable value. The v1 path is more
+// reliable on Windows where Bun standalone dynamic imports can produce
+// module namespace objects with unexpected non-function metadata.
+// Keep constants in constants.ts and import them here.
 
 type OAuthAuth = {
   type: "oauth"
@@ -688,4 +691,10 @@ const plugin: Plugin = async ({ client }) => {
   }
 }
 
-export default plugin
+// v1 PluginModule format — bypasses getLegacyPlugins entirely.
+// For npm-sourced plugins, id is optional (falls back to package.json name),
+// but we set it explicitly for clarity.
+export default {
+  id: "opencode-kimi-full",
+  server: plugin,
+} satisfies PluginModule

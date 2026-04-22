@@ -2,7 +2,9 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { test, expect, afterEach } from "bun:test"
-import plugin from "../src/index.ts"
+import pluginModule from "../src/index.ts"
+
+const plugin = pluginModule.server
 import { MODEL_ID, PROVIDER_ID, REFRESH_SAFETY_WINDOW_MS } from "../src/constants.ts"
 import { installFetchMock } from "./_util/fetchMock.ts"
 
