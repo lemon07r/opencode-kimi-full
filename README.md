@@ -1,6 +1,6 @@
 ## opencode-kimi-full
 
-An [opencode](https://opencode.ai) plugin that makes the Kimi Code path in opencode behave like the official `kimi-cli`, instead of a generic OpenAI-compatible provider.
+An [opencode](https://opencode.ai) plugin that extends the Kimi Code path in opencode work like the official `kimi-cli` and make use of it's Kimi-specific extensions, instead of just working like a generic OpenAI-compatible provider.
 
 Compared with stock opencode Kimi setups, this plugin:
 
