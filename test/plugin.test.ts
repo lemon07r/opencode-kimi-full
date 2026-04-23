@@ -292,19 +292,55 @@ function makeProviderState(context = 0) {
     id: PROVIDER_ID,
     models: {
       [MODEL_ID]: {
+        id: MODEL_ID,
+        providerID: PROVIDER_ID,
+        api: {
+          id: MODEL_ID,
+          npm: "@ai-sdk/openai-compatible",
+          url: "https://api.kimi.com/coding/v1",
+        },
+        status: "active",
+        headers: {},
         name: "Kimi For Coding",
-        reasoning: true,
         options: {},
-        limit: { context },
+        cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
+        limit: { context, output: 8192 },
+        capabilities: {
+          temperature: false,
+          reasoning: true,
+          attachment: false,
+          toolcall: true,
+          input: { text: true, audio: false, image: false, video: false, pdf: false },
+          output: { text: true, audio: false, image: false, video: false, pdf: false },
+          interleaved: false,
+        },
         variants: {
           auto: { reasoning_effort: "auto" },
         },
       },
       "some-other-model": {
+        id: "some-other-model",
+        providerID: PROVIDER_ID,
+        api: {
+          id: "some-other-model",
+          npm: "@ai-sdk/openai-compatible",
+          url: "https://api.kimi.com/coding/v1",
+        },
+        status: "active",
+        headers: {},
         name: "Other",
-        reasoning: false,
         options: {},
-        limit: { context: 1234 },
+        cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
+        limit: { context: 1234, output: 4096 },
+        capabilities: {
+          temperature: false,
+          reasoning: false,
+          attachment: false,
+          toolcall: true,
+          input: { text: true, audio: false, image: false, video: false, pdf: false },
+          output: { text: true, audio: false, image: false, video: false, pdf: false },
+          interleaved: false,
+        },
       },
     },
   }
@@ -341,6 +377,25 @@ test("provider.models: surfaces discovered display_name in runtime model metadat
   const next = await hooks.provider!.models!(provider as any, { auth: validAuth() } as any)
   expect(next[MODEL_ID]!.name).toBe("Kimi Code")
   expect(provider.models[MODEL_ID]!.name).toBe("Kimi For Coding")
+})
+
+test("provider.models: surfaces discovered image input capability so opencode does not strip images", async () => {
+  mock = installFetchMock((call) => {
+    if (call.url.endsWith("/coding/v1/models")) {
+      return {
+        body: {
+          data: [{ id: MODEL_ID, display_name: "Kimi Code", context_length: 262144, supports_image_in: true }],
+        },
+      }
+    }
+    return { body: { ok: true } }
+  })
+  const { hooks } = await getHooks()
+  const provider = makeProviderState()
+  const next = await hooks.provider!.models!(provider as any, { auth: validAuth() } as any)
+  expect(next[MODEL_ID]!.capabilities.input.image).toBe(true)
+  expect(next[MODEL_ID]!.capabilities.attachment).toBe(true)
+  expect(provider.models[MODEL_ID]!.capabilities.input.image).toBe(false)
 })
 
 test("provider.models: preserves an explicit user context limit", async () => {
@@ -946,7 +1001,11 @@ test("auth callback prints a schema-valid config snippet with top-level model va
       }
     }
     if (call.url.endsWith("/coding/v1/models")) {
-      return { body: { data: [{ id: "kimi-for-coding", display_name: "Kimi Code", context_length: 262144 }] } }
+      return {
+        body: {
+          data: [{ id: "kimi-for-coding", display_name: "Kimi Code", context_length: 262144, supports_image_in: true }],
+        },
+      }
     }
     return { body: { access_token: "A", refresh_token: "R", token_type: "Bearer", expires_in: 900 } }
   })
@@ -974,7 +1033,9 @@ test("auth callback prints a schema-valid config snippet with top-level model va
       [key: string]: {
         models: {
           [key: string]: {
+            attachment?: boolean
             limit?: { context?: number }
+            modalities?: { input?: string[]; output?: string[] }
             options?: Record<string, unknown>
             variants?: Record<string, { reasoning_effort?: string }>
           }
@@ -984,7 +1045,12 @@ test("auth callback prints a schema-valid config snippet with top-level model va
   }
   const model = parsed.provider[PROVIDER_ID]!.models[MODEL_ID]!
   expect(text).toContain("context 262144")
+  expect(model.attachment).toBe(true)
   expect(model.limit).toBeUndefined()
+  expect(model.modalities).toEqual({
+    input: ["text", "image"],
+    output: ["text"],
+  })
   expect(model.options).toEqual({})
   expect(model.variants?.off).toEqual({ reasoning_effort: "off" })
   expect(model.variants?.auto).toEqual({ reasoning_effort: "auto" })

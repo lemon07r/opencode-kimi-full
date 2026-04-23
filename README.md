@@ -9,7 +9,7 @@ Compared with stock opencode Kimi setups, this plugin:
 - sends the same `User-Agent` / `X-Msh-*` fingerprint headers as `kimi-cli`
 - reuses `~/.kimi/device_id` for `X-Msh-Device-Id`
 - adds `prompt_cache_key`, `thinking`, and `reasoning_effort` for `kimi-for-coding` requests
-- discovers the authoritative wire model slug, API display name, and context length from `/coding/v1/models`
+- discovers the authoritative wire model slug, API display name, context length, and image-input capability from `/coding/v1/models`
 - keeps tokens in opencode's auth store while mirroring `kimi-cli`'s refresh / retry behavior
 
 That is the value of using this plugin instead of a plain opencode provider entry: it preserves the Kimi-only OAuth path, fingerprint, and request extensions that the generic route does not.
@@ -123,7 +123,7 @@ During login the plugin:
 
 - shows a verification URL and user code
 - stores the OAuth token in opencode's auth store
-- discovers the exact model slug, display name, and context length your account should send to Kimi
+- discovers the exact model slug, display name, context length, and image-input capability your account should send to Kimi
 - prints a config hint that uses the discovered display name and leaves context backfill to runtime metadata discovery
 
 Access tokens refresh automatically while you use the model.
@@ -152,6 +152,7 @@ Fastest fix:
 <summary><strong>Login and refresh details</strong></summary>
 
 - The plugin queries `/coding/v1/models` during login so it can discover the current wire model id and context length for your account.
+- The plugin also uses that discovery response to backfill image-input support into opencode's runtime model metadata, so pasted or dropped images reach Kimi instead of being downgraded into local error text.
 - The printed config hint intentionally omits `limit`, because opencode requires both `limit.context` and `limit.output`, while Kimi's models endpoint only exposes `context_length`.
 - Model discovery runs again on every token refresh, and a fresh loader instance can re-query `/coding/v1/models` on first use if it needs the current wire model id.
 - On a `401`, the loader refreshes the access token once and retries the request once.

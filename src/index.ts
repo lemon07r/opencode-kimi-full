@@ -26,6 +26,7 @@ type ModelDiscovery = {
   model_id?: string
   context_length?: number
   model_display?: string
+  supports_image_in?: boolean
 }
 
 type ThinkingType = "enabled" | "disabled"
@@ -38,8 +39,19 @@ type KimiBodyFields = {
 
 type ModelWithDiscoveryMetadata = {
   name?: string
+  attachment?: boolean
   limit?: {
     context?: number
+  }
+  modalities?: {
+    input?: string[]
+    output?: string[]
+  }
+  capabilities?: {
+    attachment?: boolean
+    input?: {
+      image?: boolean
+    }
   }
 }
 
@@ -252,6 +264,7 @@ function pickModelInfo(models: KimiModelInfo[]): ModelDiscovery {
     model_id: picked.id,
     context_length: picked.context_length,
     model_display: picked.display_name,
+    supports_image_in: picked.supports_image_in,
   }
 }
 
@@ -275,10 +288,89 @@ function withDiscoveredDisplayName<T extends ModelWithDiscoveryMetadata>(model: 
   }
 }
 
+function sameStrings(left: string[] | undefined, right: string[] | undefined) {
+  if (left === right) return true
+  if (!left || !right) return false
+  if (left.length !== right.length) return false
+  return left.every((value, index) => value === right[index])
+}
+
+function uniqueStrings(values: string[]) {
+  return [...new Set(values)]
+}
+
+function withDiscoveredImageInput<T extends ModelWithDiscoveryMetadata>(model: T, supportsImageIn: boolean | undefined): T {
+  if (supportsImageIn === undefined) return model
+
+  let changed = false
+  let nextAttachment = model.attachment
+  let nextModalities = model.modalities
+  let nextCapabilities = model.capabilities
+
+  if (supportsImageIn && model.attachment !== true) {
+    nextAttachment = true
+    changed = true
+  }
+
+  const currentInputModalities = model.modalities?.input
+  const currentOutputModalities = model.modalities?.output
+  const shouldPatchModalities = supportsImageIn || currentInputModalities?.includes("image") === true
+  if (shouldPatchModalities) {
+    const nextInputModalities = uniqueStrings([
+      "text",
+      ...(currentInputModalities ?? []),
+      ...(supportsImageIn ? ["image"] : []),
+    ]).filter((value) => value !== "image" || supportsImageIn)
+    const nextOutputModalities = uniqueStrings(["text", ...(currentOutputModalities ?? [])])
+    if (
+      !sameStrings(currentInputModalities, nextInputModalities) ||
+      !sameStrings(currentOutputModalities, nextOutputModalities)
+    ) {
+      nextModalities = {
+        ...model.modalities,
+        input: nextInputModalities,
+        output: nextOutputModalities,
+      }
+      changed = true
+    }
+  }
+
+  const currentCapabilityImage = model.capabilities?.input?.image
+  const currentCapabilityAttachment = model.capabilities?.attachment
+  if (currentCapabilityImage !== undefined && currentCapabilityImage !== supportsImageIn) {
+    nextCapabilities = {
+      ...nextCapabilities,
+      input: {
+        ...nextCapabilities?.input,
+        image: supportsImageIn,
+      },
+    }
+    changed = true
+  }
+  if (supportsImageIn && currentCapabilityAttachment !== undefined && currentCapabilityAttachment !== true) {
+    nextCapabilities = {
+      ...nextCapabilities,
+      attachment: true,
+    }
+    changed = true
+  }
+
+  if (!changed) return model
+  return {
+    ...model,
+    ...(nextAttachment === undefined ? {} : { attachment: nextAttachment }),
+    ...(nextModalities ? { modalities: nextModalities } : {}),
+    ...(nextCapabilities ? { capabilities: nextCapabilities } : {}),
+  }
+}
+
 function applyDiscoveryToModels<T extends Record<string, ModelWithDiscoveryMetadata>>(models: T, discovery: ModelDiscovery): T {
   const current = models[MODEL_ID]
   if (!current) return models
-  const next = withDiscoveredContext(withDiscoveredDisplayName(current, discovery.model_display), discovery.context_length)
+  const next = withDiscoveredImageInput(
+    withDiscoveredContext(withDiscoveredDisplayName(current, discovery.model_display), discovery.context_length),
+    discovery.supports_image_in,
+  )
   if (next === current) return models
   return {
     ...models,
@@ -286,7 +378,7 @@ function applyDiscoveryToModels<T extends Record<string, ModelWithDiscoveryMetad
   }
 }
 
-function buildConfigBlock(info: { model_id: string; display?: string }) {
+function buildConfigBlock(info: { model_id: string; display?: string; supports_image_in?: boolean }) {
   const name = info.display ?? "Kimi For Coding"
   // The opencode-side model key is always MODEL_ID ("kimi-for-coding"); the
   // plugin rewrites the wire `model` body field to `info.model_id` inside
@@ -297,6 +389,29 @@ function buildConfigBlock(info: { model_id: string; display?: string }) {
   // `limit.output` whenever a `limit` object is present, but Kimi's
   // `/coding/v1/models` discovery only tells us `context_length`. The
   // provider.models hook backfills `limit.context` at runtime.
+  const modelConfig: Record<string, unknown> = {
+    name,
+    reasoning: true,
+    options: {},
+    variants: {
+      off: { reasoning_effort: "off" },
+      auto: { reasoning_effort: "auto" },
+      low: { reasoning_effort: "low" },
+      medium: { reasoning_effort: "medium" },
+      high: { reasoning_effort: "high" },
+    },
+  }
+  if (info.supports_image_in) {
+    // opencode's provider transform gates image parts on model metadata
+    // before the request reaches our loader. Mirror Kimi's discovered
+    // capability here so pasted images survive into the upstream SDK.
+    modelConfig.attachment = true
+    modelConfig.modalities = {
+      input: ["text", "image"],
+      output: ["text"],
+    }
+  }
+
   return JSON.stringify(
     {
       provider: {
@@ -305,18 +420,7 @@ function buildConfigBlock(info: { model_id: string; display?: string }) {
           name: "Kimi For Coding (OAuth)",
           options: { baseURL: API_BASE_URL },
           models: {
-            [MODEL_ID]: {
-              name,
-              reasoning: true,
-              options: {},
-              variants: {
-                off: { reasoning_effort: "off" },
-                auto: { reasoning_effort: "auto" },
-                low: { reasoning_effort: "low" },
-                medium: { reasoning_effort: "medium" },
-                high: { reasoning_effort: "high" },
-              },
-            },
+            [MODEL_ID]: modelConfig,
           },
         },
       },
@@ -635,6 +739,7 @@ const plugin: Plugin = async ({ client }) => {
                       const block = buildConfigBlock({
                         model_id: discovered.model_id,
                         display: discovered.model_display,
+                        supports_image_in: discovered.supports_image_in,
                       })
                       console.log(
                         `\n✓ Authorized for Kimi For Coding (model: ${discovered.model_id}${
