@@ -1,10 +1,9 @@
-import fs from "node:fs/promises"
-import os from "node:os"
-import path from "node:path"
 import type { Plugin, PluginModule } from "@opencode-ai/plugin"
-import { API_BASE_URL, MODEL_ID, PROVIDER_ID, REFRESH_SAFETY_WINDOW_MS } from "./constants.ts"
+import { isAuthExpiring, refreshAuthWithLock } from "./auth-refresh.ts"
+import { isOAuthAuth, readAuth, type OAuthAuth } from "./auth-store.ts"
+import { API_BASE_URL, MODEL_ID, PROVIDER_ID } from "./constants.ts"
 import { kimiHeaders } from "./headers.ts"
-import { type KimiModelInfo, listModels, pollDeviceToken, refreshToken, startDeviceAuth } from "./oauth.ts"
+import { type KimiModelInfo, listModels, pollDeviceToken, startDeviceAuth } from "./oauth.ts"
 
 // IMPORTANT: this module must have exactly ONE export — the default
 // PluginModule object. opencode's plugin loader detects the v1 format
@@ -14,13 +13,6 @@ import { type KimiModelInfo, listModels, pollDeviceToken, refreshToken, startDev
 // reliable on Windows where Bun standalone dynamic imports can produce
 // module namespace objects with unexpected non-function metadata.
 // Keep constants in constants.ts and import them here.
-
-type OAuthAuth = {
-  type: "oauth"
-  refresh: string
-  access: string
-  expires: number
-}
 
 type ModelDiscovery = {
   model_id?: string
@@ -73,118 +65,9 @@ type KimiHookInput = {
 const INTERNAL_PROMPT_CACHE_KEY_HEADER = "x-opencode-kimi-prompt-cache-key"
 const INTERNAL_REASONING_EFFORT_HEADER = "x-opencode-kimi-reasoning-effort"
 const INTERNAL_THINKING_TYPE_HEADER = "x-opencode-kimi-thinking-type"
-const REFRESH_LOCK_WAIT_MS = 15_000
-const REFRESH_LOCK_POLL_MS = 100
-const REFRESH_LOCK_STALE_MS = 120_000
-
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms))
-}
-
-function isOAuthAuth(value: unknown): value is OAuthAuth {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false
-  const auth = value as Partial<OAuthAuth>
-  return (
-    auth.type === "oauth" &&
-    typeof auth.access === "string" &&
-    typeof auth.refresh === "string" &&
-    typeof auth.expires === "number"
-  )
-}
-
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return
   return value as Record<string, unknown>
-}
-
-function authStoreCandidates() {
-  const home = os.homedir()
-  if (process.env.XDG_DATA_HOME) {
-    return [path.join(process.env.XDG_DATA_HOME, "opencode", "auth.json")]
-  }
-  const candidates = new Set<string>()
-  candidates.add(path.join(home, ".local", "share", "opencode", "auth.json"))
-  if (process.platform === "darwin") {
-    candidates.add(path.join(home, "Library", "Application Support", "opencode", "auth.json"))
-  }
-  if (process.platform === "win32") {
-    const local = process.env.LOCALAPPDATA ?? path.join(home, "AppData", "Local")
-    candidates.add(path.join(local, "opencode", "auth.json"))
-    if (process.env.APPDATA) {
-      candidates.add(path.join(process.env.APPDATA, "opencode", "auth.json"))
-    }
-  }
-  return [...candidates]
-}
-
-async function resolveAuthStorePath() {
-  const candidates = authStoreCandidates()
-  for (const file of candidates) {
-    try {
-      await fs.access(file)
-      return file
-    } catch {}
-  }
-  return candidates[0]!
-}
-
-async function readAuthStoreEntry() {
-  for (const file of authStoreCandidates()) {
-    try {
-      const parsed = JSON.parse(await fs.readFile(file, "utf8")) as Record<string, unknown>
-      const entry = parsed[PROVIDER_ID] ?? parsed[`${PROVIDER_ID}/`]
-      if (isOAuthAuth(entry)) return entry
-    } catch {}
-  }
-  return
-}
-
-function sameAuth(left: OAuthAuth, right: OAuthAuth) {
-  return left.access === right.access && left.refresh === right.refresh && left.expires === right.expires
-}
-
-function withInvalidGrantHint(error: unknown) {
-  if (!(error instanceof Error) || !/invalid_grant/.test(error.message)) return error
-  const next = new Error(
-    `${error.message}. The token may have been rotated or revoked in another opencode session — run \`opencode auth login kimi-for-coding-oauth\` again if it does not self-heal.`,
-  ) as Error & { code?: string; status?: number }
-  next.code = (error as Error & { code?: string }).code
-  next.status = (error as Error & { status?: number }).status
-  return next
-}
-
-async function withRefreshLock<T>(work: () => Promise<T>) {
-  const authFile = await resolveAuthStorePath()
-  const lockDir = `${authFile}.${PROVIDER_ID}.refresh.lock`
-  await fs.mkdir(path.dirname(lockDir), { recursive: true })
-  const deadline = Date.now() + REFRESH_LOCK_WAIT_MS
-
-  while (true) {
-    try {
-      await fs.mkdir(lockDir)
-      break
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code
-      if (code !== "EEXIST") throw error
-      try {
-        const stat = await fs.stat(lockDir)
-        if (Date.now() - stat.mtimeMs > REFRESH_LOCK_STALE_MS) {
-          await fs.rm(lockDir, { recursive: true, force: true })
-          continue
-        }
-      } catch {}
-      if (Date.now() >= deadline) {
-        throw new Error("kimi oauth: timed out waiting for the auth refresh lock")
-      }
-      await sleep(REFRESH_LOCK_POLL_MS)
-    }
-  }
-
-  try {
-    return await work()
-  } finally {
-    await fs.rm(lockDir, { recursive: true, force: true }).catch(() => undefined)
-  }
 }
 
 function asThinking(value: unknown): KimiBodyFields["thinking"] | undefined {
@@ -478,15 +361,13 @@ const plugin: Plugin = async ({ client }) => {
     syncProcessAuthContent(auth)
   }
 
-  const isExpiring = (auth: OAuthAuth) => auth.expires - Date.now() < REFRESH_SAFETY_WINDOW_MS
-
   const rememberDiscovery = (discovery: ModelDiscovery) => {
     if (discovery.model_id) cachedDiscovery = discovery
     return cachedDiscovery
   }
 
   const readLiveAuth = async () => {
-    const auth = await readAuthStoreEntry()
+    const auth = await readAuth()
     if (auth) syncProcessAuthContent(auth)
     return auth
   }
@@ -510,26 +391,10 @@ const plugin: Plugin = async ({ client }) => {
     if (refreshPromise) return refreshPromise
     refreshPromise = (async () => {
       try {
-        return await withRefreshLock(async () => {
-          const latest = await readLiveAuth()
-          const current = latest ?? auth
-          if (latest && !sameAuth(latest, auth) && !force && !isExpiring(latest)) return latest
-          if (!force && !isExpiring(current)) return current
-          try {
-            const tokens = await refreshToken(current.refresh)
-            const next: OAuthAuth = {
-              type: "oauth",
-              refresh: tokens.refresh_token,
-              access: tokens.access_token,
-              expires: Date.now() + tokens.expires_in * 1000,
-            }
-            await persistAuth(next)
-            return next
-          } catch (error) {
-            const newest = await readLiveAuth()
-            if (newest && !sameAuth(newest, current)) return newest
-            throw withInvalidGrantHint(error)
-          }
+        return await refreshAuthWithLock(auth, {
+          force,
+          readLatest: readLiveAuth,
+          persist: persistAuth,
         })
       } finally {
         refreshPromise = undefined
@@ -552,7 +417,7 @@ const plugin: Plugin = async ({ client }) => {
         const current = (await readCurrentAuth()) ?? ctx.auth
         let auth = current
         try {
-          if (isExpiring(auth)) auth = await refreshAuth(auth)
+          if (isAuthExpiring(auth)) auth = await refreshAuth(auth)
           return await discover(auth)
         } catch (error) {
           if (auth !== current || (error as { status?: number }).status !== 401) return provider.models
@@ -615,7 +480,7 @@ const plugin: Plugin = async ({ client }) => {
             throw new Error(
               "kimi-for-coding-oauth: not logged in — run `opencode auth login kimi-for-coding-oauth`",
             )
-          if (!force && !isExpiring(current)) return ensureDiscovered(current)
+          if (!force && !isAuthExpiring(current)) return ensureDiscovered(current)
           const next = await refreshAuth(current, force)
           // kimi-cli re-runs `refresh_managed_models` on every successful
           // refresh — we mirror that so entitlement or display-name changes
