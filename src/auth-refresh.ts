@@ -1,3 +1,4 @@
+import crypto from "node:crypto"
 import fs from "node:fs/promises"
 import path from "node:path"
 import { PROVIDER_ID, REFRESH_SAFETY_WINDOW_MS } from "./constants.ts"
@@ -13,6 +14,8 @@ import { refreshToken } from "./oauth.ts"
 const REFRESH_LOCK_WAIT_MS = 15_000
 const REFRESH_LOCK_POLL_MS = 100
 const REFRESH_LOCK_STALE_MS = 120_000
+const REFRESH_LOCK_HEARTBEAT_MS = 30_000
+const REFRESH_LOCK_OWNER_FILE = "owner.json"
 
 type RefreshOptions = {
   force?: boolean
@@ -22,6 +25,10 @@ type RefreshOptions = {
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function isNodeError(error: unknown, code: string) {
+  return (error as NodeJS.ErrnoException).code === code
 }
 
 function sameAuth(left: OAuthAuth, right: OAuthAuth) {
@@ -42,26 +49,77 @@ export function isAuthExpiring(auth: OAuthAuth) {
   return auth.expires - Date.now() < REFRESH_SAFETY_WINDOW_MS
 }
 
+function lockOwner(token: string) {
+  return {
+    token,
+    pid: process.pid,
+    updatedAt: Date.now(),
+  }
+}
+
+async function writeLockOwner(ownerFile: string, token: string) {
+  const tmpOwnerFile = `${ownerFile}.${process.pid}.${crypto.randomUUID()}.tmp`
+  try {
+    await fs.writeFile(tmpOwnerFile, JSON.stringify(lockOwner(token)), "utf8")
+    await fs.rename(tmpOwnerFile, ownerFile)
+  } catch (error) {
+    await fs.rm(tmpOwnerFile, { force: true }).catch(() => undefined)
+    throw error
+  }
+}
+
+async function ownsLock(ownerFile: string, token: string) {
+  try {
+    const data = JSON.parse(await fs.readFile(ownerFile, "utf8")) as { token?: unknown }
+    return data.token === token
+  } catch (error) {
+    if (isNodeError(error, "ENOENT") || error instanceof SyntaxError) return false
+    throw error
+  }
+}
+
+async function removeStaleLock(lockDir: string, ownerFile: string) {
+  const stat = await fs.stat(ownerFile).catch(async (error) => {
+    if (!isNodeError(error, "ENOENT")) throw error
+    return fs.stat(lockDir).catch((lockError) => {
+      if (isNodeError(lockError, "ENOENT")) return
+      throw lockError
+    })
+  })
+  if (!stat) return true
+  if (Date.now() - stat.mtimeMs <= REFRESH_LOCK_STALE_MS) return false
+
+  const staleDir = `${lockDir}.stale.${process.pid}.${Date.now()}.${crypto.randomUUID()}`
+  try {
+    await fs.rename(lockDir, staleDir)
+  } catch (error) {
+    if (isNodeError(error, "ENOENT")) return true
+    throw error
+  }
+  await fs.rm(staleDir, { recursive: true, force: true })
+  return true
+}
+
 async function withRefreshLock<T>(work: () => Promise<T>) {
   const authFile = await resolveAuthStorePath()
   const lockDir = `${authFile}.${PROVIDER_ID}.refresh.lock`
+  const ownerFile = path.join(lockDir, REFRESH_LOCK_OWNER_FILE)
+  const ownerToken = crypto.randomUUID()
   await fs.mkdir(path.dirname(lockDir), { recursive: true })
   const deadline = Date.now() + REFRESH_LOCK_WAIT_MS
 
   while (true) {
     try {
       await fs.mkdir(lockDir)
+      await writeLockOwner(ownerFile, ownerToken).catch(async (error) => {
+        await fs.rm(lockDir, { recursive: true, force: true }).catch(() => undefined)
+        throw error
+      })
       break
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code
       if (code !== "EEXIST") throw error
-      try {
-        const stat = await fs.stat(lockDir)
-        if (Date.now() - stat.mtimeMs > REFRESH_LOCK_STALE_MS) {
-          await fs.rm(lockDir, { recursive: true, force: true })
-          continue
-        }
-      } catch {}
+      if (await removeStaleLock(lockDir, ownerFile)) continue
       if (Date.now() >= deadline) {
         throw new Error("kimi oauth: timed out waiting for the auth refresh lock")
       }
@@ -69,10 +127,18 @@ async function withRefreshLock<T>(work: () => Promise<T>) {
     }
   }
 
+  const heartbeat = setInterval(() => {
+    writeLockOwner(ownerFile, ownerToken).catch(() => undefined)
+  }, REFRESH_LOCK_HEARTBEAT_MS)
+  heartbeat.unref?.()
+
   try {
     return await work()
   } finally {
-    await fs.rm(lockDir, { recursive: true, force: true }).catch(() => undefined)
+    clearInterval(heartbeat)
+    await ownsLock(ownerFile, ownerToken)
+      .then((owned) => (owned ? fs.rm(lockDir, { recursive: true, force: true }) : undefined))
+      .catch(() => undefined)
   }
 }
 

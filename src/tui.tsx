@@ -111,6 +111,8 @@ function UsageDialog(props: { api: TuiPluginApi; rows?: UsageRow[]; loading?: bo
 }
 
 const tui: TuiPlugin = async (api) => {
+  let usageRequestId = 0
+
   api.command.register(() => [
     {
       title: "Kimi usage",
@@ -121,13 +123,28 @@ const tui: TuiPlugin = async (api) => {
         name: "kimi:usage",
       },
       onSelect: async () => {
-        api.ui.dialog.replace(() => <UsageDialog api={api} loading />)
+        const requestId = ++usageRequestId
+        let dismissed = false
+        let replacing = false
+        const isCurrent = () => usageRequestId === requestId && !dismissed
+        const markDismissed = () => {
+          if (!replacing) dismissed = true
+        }
+
+        api.ui.dialog.replace(() => <UsageDialog api={api} loading />, markDismissed)
         try {
           const auth = await ensureFreshStoredAuth()
           const payload = await fetchUsage(auth.access)
           const rows = parseUsagePayload(payload)
-          api.ui.dialog.replace(() => <UsageDialog api={api} rows={rows} />)
+          if (!isCurrent()) return
+          replacing = true
+          try {
+            api.ui.dialog.replace(() => <UsageDialog api={api} rows={rows} />, markDismissed)
+          } finally {
+            replacing = false
+          }
         } catch (error) {
+          if (!isCurrent()) return
           api.ui.dialog.clear()
           api.ui.toast({
             message: error instanceof Error ? error.message : "Failed to fetch Kimi usage.",

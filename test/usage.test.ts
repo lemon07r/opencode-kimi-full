@@ -39,3 +39,15 @@ test("parseUsagePayload maps summary and rolling limits", () => {
     },
   ])
 })
+
+test("parseUsagePayload preserves immediate reset hints", () => {
+  const rows = parseUsagePayload({
+    usage: {
+      limit: 100,
+      used: 100,
+      reset_in: 0,
+    },
+  })
+
+  expect(rows[0]?.resetHint).toBe("reset now")
+})

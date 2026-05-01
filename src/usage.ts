@@ -78,8 +78,8 @@ function resetHint(data: Record<string, unknown>) {
   if (resetAt) return formatResetTime(String(resetAt))
 
   const seconds = toInt(data.reset_in ?? data.resetIn ?? data.ttl ?? data.window)
-  if (!seconds) return
-  return `resets in ${formatDuration(seconds)}`
+  if (seconds === undefined) return
+  return seconds === 0 ? "reset now" : `resets in ${formatDuration(seconds)}`
 }
 
 function toUsageRow(data: Record<string, unknown>, defaultLabel: string): UsageRow | undefined {
