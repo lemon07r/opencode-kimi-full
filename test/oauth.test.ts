@@ -4,7 +4,6 @@ import {
   OAUTH_DEVICE_AUTH_URL,
   OAUTH_DEVICE_GRANT,
   OAUTH_REFRESH_GRANT,
-  OAUTH_SCOPE,
   OAUTH_TOKEN_URL,
 } from "../src/constants.ts"
 import { pollDeviceToken, refreshToken, startDeviceAuth } from "../src/oauth.ts"
@@ -20,7 +19,7 @@ afterEach(() => {
   mock = undefined
 })
 
-test("startDeviceAuth posts client_id+scope as form-encoded to the device endpoint", async () => {
+test("startDeviceAuth posts client_id as form-encoded to the device endpoint", async () => {
   mock = installFetchMock(() => ({
     body: {
       device_code: "dc",
@@ -44,7 +43,6 @@ test("startDeviceAuth posts client_id+scope as form-encoded to the device endpoi
   expect(call.headers["x-msh-device-id"]).toMatch(/^[0-9a-f]{32}$/)
   expect(parseForm(call.body)).toEqual({
     client_id: OAUTH_CLIENT_ID,
-    scope: OAUTH_SCOPE,
   })
 })
 

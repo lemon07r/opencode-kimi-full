@@ -26,14 +26,18 @@ Every design decision here follows from that: we do device-flow OAuth to mirror 
 
 ### Architecture
 
-Three files, 1 job each. Do not add a fourth unless the existing three genuinely can't hold a new concern.
+Each source file has one job. Do not add new files unless the existing ones genuinely can't hold a new concern.
 
 | File               | Responsibility                                                                 |
 |--------------------|--------------------------------------------------------------------------------|
-| `src/constants.ts` | Pinned strings that must mirror upstream kimi-cli (version, endpoints, client id, scope). |
+| `src/constants.ts` | Pinned strings that must mirror upstream kimi-cli (version, endpoints, client id). |
 | `src/headers.ts`   | The seven `X-Msh-*` / UA headers + the persistent `~/.kimi/device_id` file.    |
 | `src/oauth.ts`     | Device-code start, device-code poll, refresh-token exchange, and `GET /coding/v1/models` discovery. |
+| `src/auth-store.ts`| Read/write opencode's `auth.json` entries for this provider.                    |
+| `src/auth-refresh.ts`| Lock-based token refresh with cross-instance coordination, `ensureFreshStoredAuth` for standalone callers. |
 | `src/index.ts`     | Plugin entry (v1 `PluginModule` format). Wires `auth` (login + loader) plus the Kimi chat hooks/body rewrite. |
+| `src/usage.ts`     | Fetch and parse Kimi subscription usage (`/coding/v1/usages`).                 |
+| `src/tui.tsx`      | TUI slash command `/kimi:usage` — renders usage in an opencode dialog.         |
 
 Data flow on a chat request:
 

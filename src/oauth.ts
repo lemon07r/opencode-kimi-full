@@ -4,7 +4,6 @@ import {
   OAUTH_DEVICE_AUTH_URL,
   OAUTH_DEVICE_GRANT,
   OAUTH_REFRESH_GRANT,
-  OAUTH_SCOPE,
   OAUTH_TOKEN_URL,
 } from "./constants.ts"
 import { kimiHeaders } from "./headers.ts"
@@ -65,9 +64,11 @@ async function postForm<T>(url: string, params: Record<string, string>): Promise
 }
 
 export async function startDeviceAuth(): Promise<DeviceAuth> {
+  // kimi-cli v1.41.0 dropped the `scope` parameter from the device
+  // authorization request (research/kimi-cli/src/kimi_cli/auth/oauth.py,
+  // request_device_authorization). Only `client_id` is sent now.
   return postForm<DeviceAuth>(OAUTH_DEVICE_AUTH_URL, {
     client_id: OAUTH_CLIENT_ID,
-    scope: OAUTH_SCOPE,
   })
 }
 

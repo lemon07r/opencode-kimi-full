@@ -18,13 +18,12 @@ test("USER_AGENT embeds KIMI_CLI_VERSION", () => {
 
 test("OAuth constants match upstream kimi-cli exactly", () => {
   // Pinned values from research/kimi-cli/src/kimi_cli/auth/oauth.py. If these
-  // drift from upstream, tokens are issued against the wrong scope/client and
-  // the plugin no longer mirrors official kimi-cli auth.
+  // drift from upstream, tokens are issued against the wrong client and the
+  // plugin no longer mirrors official kimi-cli auth.
   expect(C.OAUTH_HOST).toBe("https://auth.kimi.com")
   expect(C.OAUTH_DEVICE_AUTH_URL).toBe("https://auth.kimi.com/api/oauth/device_authorization")
   expect(C.OAUTH_TOKEN_URL).toBe("https://auth.kimi.com/api/oauth/token")
   expect(C.OAUTH_CLIENT_ID).toBe("17e5f671-d194-4dfb-9706-5516cb48c098")
-  expect(C.OAUTH_SCOPE).toBe("kimi-code")
   expect(C.OAUTH_DEVICE_GRANT).toBe("urn:ietf:params:oauth:grant-type:device_code")
   expect(C.OAUTH_REFRESH_GRANT).toBe("refresh_token")
 })

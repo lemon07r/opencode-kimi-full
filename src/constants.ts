@@ -1,13 +1,13 @@
-// Values mirror kimi-cli v1.37.0 1:1. When upstream bumps, update here and
+// Values mirror kimi-cli v1.41.0 1:1. When upstream bumps, update here and
 // nothing else in the codebase should hard-code these strings.
 //
 // Source of truth: research/kimi-cli/src/kimi_cli/constant.py,
 // research/kimi-cli/src/kimi_cli/auth/oauth.py
 //
 // NOTE: client_id is a public constant shipped inside the official CLI, not a
-// secret. scope `kimi-code` is the upstream coding-agent OAuth scope.
+// secret.
 
-export const KIMI_CLI_VERSION = "1.37.0"
+export const KIMI_CLI_VERSION = "1.41.0"
 // Upstream: research/kimi-cli/src/kimi_cli/constant.py get_user_agent() →
 // f"KimiCLI/{get_version()}". This must match verbatim — Moonshot's
 // `kimi-for-coding` backend 403s on any other UA prefix
@@ -18,7 +18,6 @@ export const OAUTH_HOST = "https://auth.kimi.com"
 export const OAUTH_DEVICE_AUTH_URL = `${OAUTH_HOST}/api/oauth/device_authorization`
 export const OAUTH_TOKEN_URL = `${OAUTH_HOST}/api/oauth/token`
 export const OAUTH_CLIENT_ID = "17e5f671-d194-4dfb-9706-5516cb48c098"
-export const OAUTH_SCOPE = "kimi-code"
 export const OAUTH_DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code"
 export const OAUTH_REFRESH_GRANT = "refresh_token"
 
