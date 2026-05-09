@@ -19,6 +19,7 @@ type ModelDiscovery = {
   context_length?: number
   model_display?: string
   supports_image_in?: boolean
+  supports_video_in?: boolean
 }
 
 type ThinkingType = "enabled" | "disabled"
@@ -82,6 +83,14 @@ function pickEffort(options: Record<string, unknown> | undefined) {
   return typeof effort === "string" ? effort : undefined
 }
 
+// kimi-cli clamps xhigh/max to "high" (research/kimi-cli/packages/kosong/
+// src/kosong/chat_provider/kimi.py, Kimi.with_thinking). Other providers
+// support higher tiers but Kimi's backend does not.
+function clampEffort(effort: string): string {
+  if (effort === "xhigh" || effort === "max") return "high"
+  return effort
+}
+
 function resolveKimiBodyFields(input: KimiHookInput): KimiBodyFields | undefined {
   if (input.model.providerID !== PROVIDER_ID) return
   if (input.model.id !== MODEL_ID) return
@@ -93,7 +102,8 @@ function resolveKimiBodyFields(input: KimiHookInput): KimiBodyFields | undefined
 
   const fields: KimiBodyFields = { prompt_cache_key: input.sessionID }
   const thinking = asThinking(variantOptions?.thinking) ?? asThinking(modelOptions?.thinking)
-  const effort = pickEffort(variantOptions) ?? pickEffort(modelOptions)
+  const rawEffort = pickEffort(variantOptions) ?? pickEffort(modelOptions)
+  const effort = rawEffort ? clampEffort(rawEffort) : undefined
 
   if (effort === "auto") return fields
   if (effort === "off") {
@@ -148,6 +158,7 @@ function pickModelInfo(models: KimiModelInfo[]): ModelDiscovery {
     context_length: picked.context_length,
     model_display: picked.display_name,
     supports_image_in: picked.supports_image_in,
+    supports_video_in: picked.supports_video_in,
   }
 }
 
@@ -182,8 +193,12 @@ function uniqueStrings(values: string[]) {
   return [...new Set(values)]
 }
 
-function withDiscoveredImageInput<T extends ModelWithDiscoveryMetadata>(model: T, supportsImageIn: boolean | undefined): T {
-  if (supportsImageIn === undefined) return model
+function withDiscoveredMediaInput<T extends ModelWithDiscoveryMetadata>(
+  model: T,
+  supportsImageIn: boolean | undefined,
+  supportsVideoIn: boolean | undefined,
+): T {
+  if (supportsImageIn === undefined && supportsVideoIn === undefined) return model
 
   let changed = false
   let nextAttachment = model.attachment
@@ -197,13 +212,19 @@ function withDiscoveredImageInput<T extends ModelWithDiscoveryMetadata>(model: T
 
   const currentInputModalities = model.modalities?.input
   const currentOutputModalities = model.modalities?.output
-  const shouldPatchModalities = supportsImageIn || currentInputModalities?.includes("image") === true
+  const shouldPatchModalities =
+    supportsImageIn || supportsVideoIn ||
+    currentInputModalities?.includes("image") === true ||
+    currentInputModalities?.includes("video") === true
   if (shouldPatchModalities) {
     const nextInputModalities = uniqueStrings([
       "text",
       ...(currentInputModalities ?? []),
       ...(supportsImageIn ? ["image"] : []),
-    ]).filter((value) => value !== "image" || supportsImageIn)
+      ...(supportsVideoIn ? ["video"] : []),
+    ])
+      .filter((value) => value !== "image" || supportsImageIn)
+      .filter((value) => value !== "video" || supportsVideoIn)
     const nextOutputModalities = uniqueStrings(["text", ...(currentOutputModalities ?? [])])
     if (
       !sameStrings(currentInputModalities, nextInputModalities) ||
@@ -250,9 +271,10 @@ function withDiscoveredImageInput<T extends ModelWithDiscoveryMetadata>(model: T
 function applyDiscoveryToModels<T extends Record<string, ModelWithDiscoveryMetadata>>(models: T, discovery: ModelDiscovery): T {
   const current = models[MODEL_ID]
   if (!current) return models
-  const next = withDiscoveredImageInput(
+  const next = withDiscoveredMediaInput(
     withDiscoveredContext(withDiscoveredDisplayName(current, discovery.model_display), discovery.context_length),
     discovery.supports_image_in,
+    discovery.supports_video_in,
   )
   if (next === current) return models
   return {
@@ -261,7 +283,7 @@ function applyDiscoveryToModels<T extends Record<string, ModelWithDiscoveryMetad
   }
 }
 
-function buildConfigBlock(info: { model_id: string; display?: string; supports_image_in?: boolean }) {
+function buildConfigBlock(info: { model_id: string; display?: string; supports_image_in?: boolean; supports_video_in?: boolean }) {
   const name = info.display ?? "Kimi For Coding"
   // The opencode-side model key is always MODEL_ID ("kimi-for-coding"); the
   // plugin rewrites the wire `model` body field to `info.model_id` inside
@@ -289,8 +311,10 @@ function buildConfigBlock(info: { model_id: string; display?: string; supports_i
     // before the request reaches our loader. Mirror Kimi's discovered
     // capability here so pasted images survive into the upstream SDK.
     modelConfig.attachment = true
+    const inputModalities = ["text", "image"]
+    if (info.supports_video_in) inputModalities.push("video")
     modelConfig.modalities = {
-      input: ["text", "image"],
+      input: inputModalities,
       output: ["text"],
     }
   }
@@ -605,6 +629,7 @@ const plugin: Plugin = async ({ client }) => {
                         model_id: discovered.model_id,
                         display: discovered.model_display,
                         supports_image_in: discovered.supports_image_in,
+                        supports_video_in: discovered.supports_video_in,
                       })
                       console.log(
                         `\n✓ Authorized for Kimi For Coding (model: ${discovered.model_id}${

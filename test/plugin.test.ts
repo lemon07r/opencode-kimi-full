@@ -185,6 +185,9 @@ const EFFORT_MATRIX: Array<{
   { in: { reasoning_effort: "low" }, effort: "low", thinkingType: "enabled" },
   { in: { reasoning_effort: "medium" }, effort: "medium", thinkingType: "enabled" },
   { in: { reasoning_effort: "high" }, effort: "high", thinkingType: "enabled" },
+  // kimi-cli clamps xhigh/max to "high" — Kimi's backend does not support them.
+  { in: { reasoning_effort: "xhigh" }, effort: "high", thinkingType: "enabled" },
+  { in: { reasoning_effort: "max" }, effort: "high", thinkingType: "enabled" },
   { in: {}, effort: undefined, thinkingType: "enabled" },
 ]
 
@@ -396,6 +399,32 @@ test("provider.models: surfaces discovered image input capability so opencode do
   expect(next[MODEL_ID]!.capabilities.input.image).toBe(true)
   expect(next[MODEL_ID]!.capabilities.attachment).toBe(true)
   expect(provider.models[MODEL_ID]!.capabilities.input.image).toBe(false)
+})
+
+test("provider.models: surfaces discovered video input in modalities", async () => {
+  mock = installFetchMock((call) => {
+    if (call.url.endsWith("/coding/v1/models")) {
+      return {
+        body: {
+          data: [{
+            id: MODEL_ID,
+            display_name: "Kimi Code",
+            context_length: 262144,
+            supports_image_in: true,
+            supports_video_in: true,
+          }],
+        },
+      }
+    }
+    return { body: { ok: true } }
+  })
+  const { hooks } = await getHooks()
+  const provider = makeProviderState()
+  const next = await hooks.provider!.models!(provider as any, { auth: validAuth() } as any)
+  const model = next[MODEL_ID] as any
+  expect(model.modalities?.input).toContain("video")
+  expect(model.modalities?.input).toContain("image")
+  expect(model.capabilities.input.image).toBe(true)
 })
 
 test("provider.models: preserves an explicit user context limit", async () => {
