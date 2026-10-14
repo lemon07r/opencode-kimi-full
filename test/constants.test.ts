@@ -5,21 +5,20 @@ import * as C from "../src/constants.ts"
 // send requests down the wrong auth / backend path or collide with models.dev
 // (PROVIDER_ID). See AGENTS.md "Contracts to keep intact".
 
-test("KIMI_CLI_VERSION is a non-empty semver", () => {
-  expect(C.KIMI_CLI_VERSION).toMatch(/^\d+\.\d+\.\d+$/)
+test("KIMI_CODE_CLI_VERSION is a non-empty semver", () => {
+  expect(C.KIMI_CODE_CLI_VERSION).toMatch(/^\d+\.\d+\.\d+$/)
 })
 
-test("USER_AGENT embeds KIMI_CLI_VERSION", () => {
-  // Must be `KimiCLI/<version>` verbatim — Moonshot's backend 403s on any
-  // other UA prefix ("access_terminated_error"). See upstream
-  // research/kimi-cli/src/kimi_cli/constant.py → get_user_agent.
-  expect(C.USER_AGENT).toBe(`KimiCLI/${C.KIMI_CLI_VERSION}`)
+test("USER_AGENT embeds KIMI_CODE_CLI_VERSION", () => {
+  // Must be `kimi-code-cli/<version>` verbatim — Moonshot's backend 403s on
+  // any other UA prefix ("access_terminated_error").
+  expect(C.USER_AGENT).toBe(`kimi-code-cli/${C.KIMI_CODE_CLI_VERSION}`)
 })
 
-test("OAuth constants match upstream kimi-cli exactly", () => {
-  // Pinned values from research/kimi-cli/src/kimi_cli/auth/oauth.py. If these
-  // drift from upstream, tokens are issued against the wrong client and the
-  // plugin no longer mirrors official kimi-cli auth.
+test("OAuth constants match upstream kimi-code-cli exactly", () => {
+  // Pinned values from upstream kimi-code-cli. If these drift from upstream,
+  // tokens are issued against the wrong client and the plugin no longer
+  // mirrors official kimi-code-cli auth.
   expect(C.OAUTH_HOST).toBe("https://auth.kimi.com")
   expect(C.OAUTH_DEVICE_AUTH_URL).toBe("https://auth.kimi.com/api/oauth/device_authorization")
   expect(C.OAUTH_TOKEN_URL).toBe("https://auth.kimi.com/api/oauth/token")

@@ -10,8 +10,9 @@ import { pollDeviceToken, refreshToken, startDeviceAuth } from "../src/oauth.ts"
 import { installFetchMock, parseForm } from "./_util/fetchMock.ts"
 
 // oauth.ts calls kimiHeaders() on every request, which reads/writes
-// ~/.kimi/device_id. That file is shared with kimi-cli by design and
-// getDeviceId is idempotent — no HOME redirect needed.
+// <KIMI_CODE_HOME>/device_id (default ~/.kimi-code/device_id). That file is
+// shared with kimi-code-cli by design and getDeviceId is idempotent — no HOME
+// redirect needed.
 
 let mock: ReturnType<typeof installFetchMock> | undefined
 afterEach(() => {
@@ -40,7 +41,9 @@ test("startDeviceAuth posts client_id as form-encoded to the device endpoint", a
   expect(call.headers["content-type"]).toBe("application/x-www-form-urlencoded")
   // Fingerprint headers must be present on every oauth call, not just chat.
   expect(call.headers["x-msh-version"]).toBeDefined()
-  expect(call.headers["x-msh-device-id"]).toMatch(/^[0-9a-f]{32}$/)
+  expect(call.headers["x-msh-device-id"]).toMatch(
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+  )
   expect(parseForm(call.body)).toEqual({
     client_id: OAUTH_CLIENT_ID,
   })

@@ -1,18 +1,16 @@
-// Values mirror kimi-cli v1.41.0 1:1. When upstream bumps, update here and
+// Values mirror kimi-code-cli v0.14.2 1:1. When upstream bumps, update here and
 // nothing else in the codebase should hard-code these strings.
 //
-// Source of truth: research/kimi-cli/src/kimi_cli/constant.py,
-// research/kimi-cli/src/kimi_cli/auth/oauth.py
+// Source of truth: upstream kimi-code-cli version / OAuth constants.
 //
 // NOTE: client_id is a public constant shipped inside the official CLI, not a
 // secret.
 
-export const KIMI_CLI_VERSION = "1.41.0"
-// Upstream: research/kimi-cli/src/kimi_cli/constant.py get_user_agent() →
-// f"KimiCLI/{get_version()}". This must match verbatim — Moonshot's
-// `kimi-for-coding` backend 403s on any other UA prefix
+export const KIMI_CODE_CLI_VERSION = "0.14.2"
+// Upstream User-Agent is "kimi-code-cli/<version>". This must match verbatim —
+// Moonshot's `kimi-for-coding` backend 403s on any other UA prefix
 // ("access_terminated_error: only available for Coding Agents").
-export const USER_AGENT = `KimiCLI/${KIMI_CLI_VERSION}`
+export const USER_AGENT = `kimi-code-cli/${KIMI_CODE_CLI_VERSION}`
 
 export const OAUTH_HOST = "https://auth.kimi.com"
 export const OAUTH_DEVICE_AUTH_URL = `${OAUTH_HOST}/api/oauth/device_authorization`

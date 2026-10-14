@@ -83,9 +83,8 @@ function pickEffort(options: Record<string, unknown> | undefined) {
   return typeof effort === "string" ? effort : undefined
 }
 
-// kimi-cli clamps xhigh/max to "high" (research/kimi-cli/packages/kosong/
-// src/kosong/chat_provider/kimi.py, Kimi.with_thinking). Other providers
-// support higher tiers but Kimi's backend does not.
+// kimi-code-cli clamps xhigh/max to "high". Other providers support higher
+// tiers but Kimi's backend does not.
 function clampEffort(effort: string): string {
   if (effort === "xhigh" || effort === "max") return "high"
   return effort
@@ -506,12 +505,12 @@ const plugin: Plugin = async ({ client }) => {
             )
           if (!force && !isAuthExpiring(current)) return ensureDiscovered(current)
           const next = await refreshAuth(current, force)
-          // kimi-cli re-runs `refresh_managed_models` on every successful
+          // kimi-code-cli re-runs model discovery on every successful
           // refresh — we mirror that so entitlement or display-name changes
           // are picked up without a full re-login. Failures here must not
-          // block the refresh: a
-          // warm in-memory discovery still works for the common case, and
-          // the request-path 401 retry will flush a broken access token.
+          // block the refresh: a warm in-memory discovery still works for the
+          // common case, and the request-path 401 retry will flush a broken
+          // access token.
           try {
             await discoverModelInfo(next.access)
           } catch {
@@ -554,8 +553,8 @@ const plugin: Plugin = async ({ client }) => {
               // This way `input.model.id` stays `kimi-for-coding` in
               // opencode's UI/config, while Moonshot sees whatever its
               // /models endpoint says for this account (for example a
-              // non-default slug). Mirrors kimi-cli's behavior — it always sends
-              // exactly the id it got back from `/models`.
+              // non-default slug). Mirrors kimi-code-cli's behavior — it always
+              // sends exactly the id it got back from `/models`.
               let newInit = init
               const targetModel = auth.model_id
               const originalBody =
@@ -615,7 +614,7 @@ const plugin: Plugin = async ({ client }) => {
                 try {
                   const tokens = await pollDeviceToken(device)
                   // Discover the account's real model entitlement right
-                  // after approval (mirrors kimi-cli's login flow).
+                  // after approval (mirrors kimi-code-cli's login flow).
                   // Failures here degrade gracefully — the plugin still
                   // works; users just don't see the config-block hint and
                   // the loader will re-attempt discovery before the first

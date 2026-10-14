@@ -26,8 +26,7 @@ export type TokenResponse = {
 
 const REFRESH_RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504])
 const REFRESH_MAX_RETRIES = 3
-// Mirror kimi-cli's default aiohttp session timeout
-// (research/kimi-cli/src/kimi_cli/utils/aiohttp.py).
+// Mirror kimi-code-cli's default session timeout.
 const REQUEST_TIMEOUT_MS = 120_000
 
 function formBody(params: Record<string, string>): string {
@@ -64,9 +63,8 @@ async function postForm<T>(url: string, params: Record<string, string>): Promise
 }
 
 export async function startDeviceAuth(): Promise<DeviceAuth> {
-  // kimi-cli v1.41.0 dropped the `scope` parameter from the device
-  // authorization request (research/kimi-cli/src/kimi_cli/auth/oauth.py,
-  // request_device_authorization). Only `client_id` is sent now.
+  // The official kimi-code-cli drops the `scope` parameter from the device
+  // authorization request. Only `client_id` is sent now.
   return postForm<DeviceAuth>(OAUTH_DEVICE_AUTH_URL, {
     client_id: OAUTH_CLIENT_ID,
   })
@@ -172,8 +170,7 @@ export async function refreshToken(refresh: string): Promise<TokenResponse> {
 
 /**
  * Shape of each entry in `GET /coding/v1/models`. Field set mirrors what
- * kimi-cli reads — see research/kimi-cli/src/kimi_cli/auth/platforms.py
- * `_list_models`. Unused-by-this-plugin flags are kept optional for
+ * kimi-code-cli reads. Unused-by-this-plugin flags are kept optional for
  * documentation; the wire response carries them either way.
  */
 export type KimiModelInfo = {
@@ -192,8 +189,8 @@ export type KimiModelInfo = {
  * `context_length` here are the only truth about what the user is actually
  * entitled to.
  *
- * kimi-cli calls this on login and on every successful token refresh
- * (see `refresh_managed_models` in platforms.py). We do the same.
+ * kimi-code-cli calls this on login and on every successful token refresh.
+ * We do the same.
  */
 export async function listModels(accessToken: string): Promise<KimiModelInfo[]> {
   const res = await fetch(`${API_BASE_URL}/models`, {

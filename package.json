@@ -1,7 +1,7 @@
 {
   "name": "opencode-kimi-full",
-  "version": "1.4.0",
-  "description": "OpenCode plugin that brings the official Kimi OAuth device flow and Kimi-specific coding request fields to opencode, matching upstream kimi-cli.",
+  "version": "2.0.0",
+  "description": "OpenCode plugin that brings the official Kimi OAuth device flow and Kimi-specific coding request fields to opencode, matching upstream kimi-code-cli.",
   "license": "MIT",
   "repository": {
     "type": "git",

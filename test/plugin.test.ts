@@ -8,9 +8,9 @@ const plugin = pluginModule.server
 import { MODEL_ID, PROVIDER_ID, REFRESH_SAFETY_WINDOW_MS } from "../src/constants.ts"
 import { installFetchMock } from "./_util/fetchMock.ts"
 
-// kimiHeaders() → getDeviceId() reads/writes ~/.kimi/device_id; that file is
-// shared with kimi-cli by design and writes are idempotent — no HOME
-// redirect needed.
+// kimiHeaders() → getDeviceId() reads/writes <KIMI_CODE_HOME>/device_id
+// (default ~/.kimi-code/device_id). That file is shared with kimi-code-cli by
+// design and writes are idempotent — no HOME redirect needed.
 
 const TEST_XDG_DATA_HOME = path.join(os.tmpdir(), `opencode-kimi-full-test-${process.pid}`)
 process.env.XDG_DATA_HOME = TEST_XDG_DATA_HOME
@@ -185,7 +185,7 @@ const EFFORT_MATRIX: Array<{
   { in: { reasoning_effort: "low" }, effort: "low", thinkingType: "enabled" },
   { in: { reasoning_effort: "medium" }, effort: "medium", thinkingType: "enabled" },
   { in: { reasoning_effort: "high" }, effort: "high", thinkingType: "enabled" },
-  // kimi-cli clamps xhigh/max to "high" — Kimi's backend does not support them.
+  // kimi-code-cli clamps xhigh/max to "high" — Kimi's backend does not support them.
   { in: { reasoning_effort: "xhigh" }, effort: "high", thinkingType: "enabled" },
   { in: { reasoning_effort: "max" }, effort: "high", thinkingType: "enabled" },
   { in: {}, effort: undefined, thinkingType: "enabled" },
@@ -534,10 +534,12 @@ test("auth.loader: owns Authorization and strips any caller-supplied value (rule
   ])
   const h = mock.calls[1]!.headers
   expect(h["authorization"]).toBe(`Bearer ${jwt()}`)
-  // Seven kimi-cli fingerprint headers are attached on every request.
-  expect(h["x-msh-platform"]).toBe("kimi_cli")
+  // Seven kimi-code-cli fingerprint headers are attached on every request.
+  expect(h["x-msh-platform"]).toBe("kimi_code_cli")
   expect(h["x-msh-version"]).toBeDefined()
-  expect(h["x-msh-device-id"]).toMatch(/^[0-9a-f]{32}$/)
+  expect(h["x-msh-device-id"]).toMatch(
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+  )
 })
 
 test("auth.loader: injects default thinking via private headers and strips them upstream", async () => {

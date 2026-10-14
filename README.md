@@ -1,16 +1,16 @@
 ## opencode-kimi-full
 
-An [opencode](https://opencode.ai) plugin that makes the Kimi Code path in opencode work like the official `kimi-cli`, using Kimi-specific extensions instead of just a generic OpenAI-compatible provider.
+An [opencode](https://opencode.ai) plugin that makes the Kimi Code path in opencode work like the official `kimi-code-cli`, using Kimi-specific extensions instead of just a generic OpenAI-compatible provider.
 
 Compared with stock opencode Kimi setups, this plugin:
 
 - uses the official Kimi device-flow OAuth against `https://auth.kimi.com`
 - talks to `https://api.kimi.com/coding/v1` through `@ai-sdk/openai-compatible`
-- sends the same `User-Agent` / `X-Msh-*` fingerprint headers as `kimi-cli`
-- reuses `~/.kimi/device_id` for `X-Msh-Device-Id`
+- sends the same `User-Agent` / `X-Msh-*` fingerprint headers as `kimi-code-cli`
+- reuses `<KIMI_CODE_HOME>/device_id` (default `~/.kimi-code/device_id`) for `X-Msh-Device-Id`
 - adds `prompt_cache_key`, `thinking`, and `reasoning_effort` for `kimi-for-coding` requests
 - discovers the authoritative wire model slug, display name, context length, and media-input capabilities from `/coding/v1/models`
-- keeps tokens in opencode's auth store while mirroring `kimi-cli`'s refresh / retry behavior
+- keeps tokens in opencode's auth store while mirroring `kimi-code-cli`'s refresh / retry behavior
 - provides a `/kimi:usage` TUI command to check subscription usage
 
 Contributor and agent documentation lives in [`AGENTS.md`](./AGENTS.md).
@@ -28,7 +28,7 @@ Contributor and agent documentation lives in [`AGENTS.md`](./AGENTS.md).
 ### Requirements
 
 - `opencode` >= 1.4.6
-- A Kimi account with an active **Kimi For Coding** subscription (the same plan that works with kimi-cli)
+- A Kimi account with an active **Kimi For Coding** subscription (the same plan that works with kimi-code-cli)
 
 ### Install
 
@@ -193,9 +193,9 @@ These variants only affect Kimi's reasoning request fields. They do not switch m
 - `auto` leaves the decision to the server
 - `low` / `medium` / `high` ask for enabled thinking with the corresponding reasoning effort
 
-Effort levels `xhigh` and `max` are clamped to `high`, matching kimi-cli's behavior (Kimi's backend does not support higher tiers).
+Effort levels `xhigh` and `max` are clamped to `high`, matching kimi-code-cli's behavior (Kimi's backend does not support higher tiers).
 
-Every `kimi-for-coding` request also gets `prompt_cache_key` set to opencode's session id. That mirrors `kimi-cli`'s cache hint so follow-up turns in the same session can reuse Kimi's prompt cache.
+Every `kimi-for-coding` request also gets `prompt_cache_key` set to opencode's session id. That mirrors `kimi-code-cli`'s cache hint so follow-up turns in the same session can reuse Kimi's prompt cache.
 
 #### Usage command
 
@@ -206,18 +206,18 @@ The plugin registers a `/kimi:usage` TUI slash command that shows your Kimi Code
 <details>
 <summary><strong>Why this plugin exists</strong></summary>
 
-Stock opencode can already talk to generic Moonshot and OpenAI-compatible endpoints. This plugin exists for the Kimi Code path specifically: it brings the official Kimi OAuth flow and Kimi-specific request behavior into opencode without sharing `kimi-cli`'s credential files.
+Stock opencode can already talk to generic Moonshot and OpenAI-compatible endpoints. This plugin exists for the Kimi Code path specifically: it brings the official Kimi OAuth flow and Kimi-specific request behavior into opencode without sharing the legacy `kimi-cli`'s credential files.
 
 **What it adds over the generic route.**
 
 - OAuth device flow against `https://auth.kimi.com`.
 - `@ai-sdk/openai-compatible` pointed at `https://api.kimi.com/coding/v1`.
 - `prompt_cache_key` set to opencode's session id, for session-scoped cache reuse.
-- Paired `thinking` + `reasoning_effort` fields, with effort clamping to match kimi-cli.
-- The seven `X-Msh-*` headers and a kimi-cli-shaped `User-Agent`.
-- `~/.kimi/device_id` shared with a locally-installed kimi-cli.
+- Paired `thinking` + `reasoning_effort` fields, with effort clamping to match kimi-code-cli.
+- The seven `X-Msh-*` headers and a kimi-code-cli-shaped `User-Agent`.
+- `<KIMI_CODE_HOME>/device_id` shared with a locally-installed kimi-code-cli.
 - Runtime model discovery from `/coding/v1/models`, including the server-reported wire slug, `display_name`, `context_length`, and media-input capabilities.
-- Tokens stored in opencode's auth store under a dedicated provider id, so the plugin and kimi-cli keep independent refresh-token chains and do not invalidate each other.
+- Tokens stored in opencode's auth store under a dedicated provider id, so the plugin and kimi-code-cli keep independent refresh-token chains and do not invalidate each other.
 - Live auth-store rereads plus a provider-scoped refresh lock, so concurrent opencode workspaces converge on the latest refresh-token chain instead of tripping `invalid_grant`.
 - Streaming, `reasoning_content` deltas, and tool-call schemas are handled upstream by `@ai-sdk/openai-compatible` -- not reimplemented here.
 
@@ -228,11 +228,11 @@ Stock opencode can already talk to generic Moonshot and OpenAI-compatible endpoi
 
 | Field | Wire shape | Purpose |
 |---|---|---|
-| `prompt_cache_key` | top-level body, snake_case, set to opencode's `sessionID` | Opt-in, session-scoped cache key, mirroring kimi-cli. |
-| `thinking` + `reasoning_effort` | `thinking: { type: "enabled" \| "disabled" }` with sibling `reasoning_effort: "low" \| "medium" \| "high"` | Sent together, matching kimi-cli. `xhigh`/`max` clamped to `high`. |
-| Seven `X-Msh-*` headers + UA | `User-Agent`, `X-Msh-Platform`, `X-Msh-Version`, `X-Msh-Device-Name`, `X-Msh-Device-Model`, `X-Msh-Device-Id`, `X-Msh-Os-Version` | Matches kimi-cli's `_common_headers()` at the pinned `KIMI_CLI_VERSION`. |
+| `prompt_cache_key` | top-level body, snake_case, set to opencode's `sessionID` | Opt-in, session-scoped cache key, mirroring kimi-code-cli. |
+| `thinking` + `reasoning_effort` | `thinking: { type: "enabled" \| "disabled" }` with sibling `reasoning_effort: "low" \| "medium" \| "high"` | Sent together, matching kimi-code-cli. `xhigh`/`max` clamped to `high`. |
+| Seven `X-Msh-*` headers + UA | `User-Agent`, `X-Msh-Platform`, `X-Msh-Version`, `X-Msh-Device-Name`, `X-Msh-Device-Model`, `X-Msh-Device-Id`, `X-Msh-Os-Version` | Matches kimi-code-cli's `_common_headers()` at the pinned `KIMI_CODE_CLI_VERSION`. |
 | `/coding/v1/models` discovery | `id`, `display_name`, `context_length`, `supports_image_in`, `supports_video_in` | Supplies the authoritative wire model slug plus runtime model metadata. |
-| `~/.kimi/device_id` | UUID persisted on disk, embedded in `X-Msh-Device-Id` | Sends the same `X-Msh-Device-Id` as a locally-installed kimi-cli. |
+| `<KIMI_CODE_HOME>/device_id` | UUID persisted on disk, embedded in `X-Msh-Device-Id` | Sends the same `X-Msh-Device-Id` as a locally-installed kimi-code-cli. |
 
 Effort-to-field mapping used by the plugin:
 
@@ -250,10 +250,10 @@ Effort-to-field mapping used by the plugin:
 
 | Path | Purpose |
 |---|---|
-| `~/.kimi/device_id` | Stable UUID used in `X-Msh-Device-Id`. Shared with kimi-cli. |
+| `<KIMI_CODE_HOME>/device_id` | Stable UUID used in `X-Msh-Device-Id`. Shared with kimi-code-cli. |
 | opencode auth store (`auth.json` in opencode's XDG data dir; on Linux typically `~/.local/share/opencode/auth.json`) | Token storage, managed by opencode through `client.auth.*`; the plugin also live-reads this entry to avoid stale workspace auth snapshots during refresh. |
 
-No other state is persisted. Credentials are never written to `~/.kimi/credentials/`; that path belongs to kimi-cli, and sharing it would cause refresh-token races between the two clients.
+No other state is persisted. Credentials are never written to `~/.kimi/credentials/`; that path belongs to the legacy Python kimi-cli, and sharing it would cause refresh-token races between the two clients.
 
 </details>
 
