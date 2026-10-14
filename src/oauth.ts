@@ -183,6 +183,16 @@ export type KimiModelInfo = {
   supports_reasoning?: boolean
   supports_image_in?: boolean
   supports_video_in?: boolean
+  /** Server-advertised thinking mode constraint, e.g. "only". */
+  supports_thinking_type?: string
+  /** Authoritative effort tiers for this model (newer than the pinned
+   *  kimi-cli, which never reads it). When present, this replaces any
+   *  client-side hardcoded capability table. */
+  think_efforts?: {
+    support?: boolean
+    valid_efforts?: string[]
+    default_effort?: string
+  }
 }
 
 /**

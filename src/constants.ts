@@ -22,7 +22,19 @@ export const OAUTH_DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code"
 export const OAUTH_REFRESH_GRANT = "refresh_token"
 
 export const API_BASE_URL = "https://api.kimi.com/coding/v1"
+// Stable opencode-side alias kept for backward compatibility.
 export const MODEL_ID = "kimi-for-coding"
+
+// There is deliberately NO static model table here. kimi-cli keeps none, and
+// neither do we: the server's `GET /coding/v1/models` response (mirrored into
+// src/discovery-cache.ts after every success) is the only truth. Plugins that
+// hardcode model tables (e.g. antigravity-auth) do so because their upstream
+// has no discovery endpoint — Kimi has one.
+
+// Last-resort context length when the server response omits `context_length`.
+// Matches the K2.7 generation's window.
+export const DEFAULT_CONTEXT_LENGTH = 256_000
+export const DEFAULT_OUTPUT_LIMIT = 65_536
 
 // Provider id the user must use in their opencode config. Intentionally NOT
 // "kimi-for-coding" — models.dev publishes an entry under that id (static
